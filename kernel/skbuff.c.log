@@ -8,8 +8,6 @@ index dc4a95c..278258c 100644
  
 +#define DPRINTK(msg, args...) 
 +
-+//#define DPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d][PID-%d] %s:%d\t" msg, smp_processor_id(), current->pid, __FUNCTION__, __LINE__, ## args);
-+
  static struct kmem_cache *skbuff_head_cache __read_mostly;
  static struct kmem_cache *skbuff_fclone_cache __read_mostly;
 +static struct kmem_cache *fastsocket_skbuff_head_cache __read_mostly;
@@ -43,7 +41,6 @@ index dc4a95c..278258c 100644
 +	pool = per_cpu_ptr(skb_pools, smp_processor_id());
 +
 +	size = SKB_DATA_ALIGN(size);
-+	//cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
 +
 +	switch (fclone) {
 +		case SLAB_SKB:
@@ -79,16 +76,7 @@ index dc4a95c..278258c 100644
 +
 +	if (enable_skb_pool && free_list && recyc_list && 
 +			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
-+		//unsigned long flags;
-+
-+		//local_irq_save(flags);
-+		//local_bh_disable();
 +		skb = __skb_dequeue(free_list);
-+		//local_bh_enable();
-+		//local_irq_restore(flags);
-+		//if (likely(skb))
-+		//	DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
-+		//			skb->pool_id, skb, smp_processor_id());
 +		if (unlikely(!skb)) {
 +			unsigned long flags;
 +
@@ -105,9 +93,6 @@ index dc4a95c..278258c 100644
 +			skb->pool_id = smp_processor_id();
 +			goto init;
 +		}
-+		//} else 
-+		//	DPRINTK("Allocate skb failed from %d pool list\n", 
-+		//			smp_processor_id());
 +	}
  
  	/* Get the HEAD */
@@ -172,15 +157,6 @@ index dc4a95c..278258c 100644
 +
 +	if (skb->pool_id == smp_processor_id()) {
 +		__skb_queue_head(&skb_pool->clone_free_list, skb);
-+		//if (likely(in_softirq())) {
-+		//	__skb_queue_head(&skb_pool->clone_free_list, skb);
-+		//	//printk(KERN_DEBUG "Free clone pool skb 0x%p in softirq\n", skb);
-+		//} else {
-+		//	//printk(KERN_DEBUG "Free clone pool skb 0x%p NOT in sofrirq\n", skb);
-+		//	local_bh_disable();
-+		//	__skb_queue_head(&skb_pool->clone_free_list, skb);
-+		//	local_bh_disable();
-+		//}
 +		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into free list\n", skb->pool_id, skb, smp_processor_id());
 +	} else {
 +		skb_queue_head(&skb_pool->clone_recyc_list, skb);
@@ -199,13 +175,11 @@ index dc4a95c..278258c 100644
 +	if (skb->pool_id == smp_processor_id()) {
 +		if (in_softirq()) {
 +			DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
-+			//printk(KERN_DEBUG "Free pool skb 0x%p in softirq\n", skb);
 +			__skb_queue_head(&skb_pool->free_list, skb);
 +		} else {
 +			local_bh_disable();
 +			__skb_queue_head(&skb_pool->free_list, skb);
 +			local_bh_enable();
-+			//printk(KERN_DEBUG "Free pool skb 0x%p NOT in softirq\n", skb);
 +		}
 +		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into free list\n", skb->pool_id, skb, smp_processor_id());
 +	} else {
@@ -221,40 +195,11 @@ index dc4a95c..278258c 100644
  	struct sk_buff *other;
  	atomic_t *fclone_ref;
  
-+	//barrier();
-+
  	switch (skb->fclone) {
  	case SKB_FCLONE_UNAVAILABLE:
 -		kmem_cache_free(skbuff_head_cache, skb);
 +		if (skb->pool_id >= 0) {
 +			kfree_pool_skb(skb);
-+			//struct skb_pool *skb_pool;
-+			//
-+		       	//skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
-+
-+			//if (skb->pool_id == smp_processor_id()) {
-+			//	//unsigned long flags;
-+
-+			//	//local_irq_save(flags);
-+			//	if (in_softirq()) {
-+			//		DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
-+			//		__skb_queue_head(&skb_pool->free_list, skb);
-+			//	} else {
-+			//		DPRINTK("Free skb[%d] 0x%p NOT in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
-+			//		local_bh_disable();
-+			//		__skb_queue_head(&skb_pool->free_list, skb);
-+			//		_local_bh_enable();
-+			//	}
-+			//	//local_irq_restore(flags);
-+
-+			//	DPRINTK("Put skb[%d] 0x%p into %d free list\n", 
-+			//			skb->pool_id, skb, skb->pool_id);
-+			//}
-+			//else {
-+			//	skb_queue_head(&skb_pool->recyc_list, skb);
-+			//	DPRINTK("Put skb[%d] 0x%p into %d recycle list\n", 
-+			//			skb->pool_id, skb, skb->pool_id);
-+			//}
 +		} else {
 +			DPRINTK("Free regular skb[%d] 0x%p\n", skb->pool_id, skb);
 +			kmem_cache_free(skbuff_head_cache, skb);
