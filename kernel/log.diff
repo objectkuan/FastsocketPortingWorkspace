@@ -1,0 +1,1850 @@
+commit 87bca5d38fb9ee1204a822b1fdc3b93028ccc7ff
+Author: xiaofeng6 <xiaofeng6@staff.sina.com.cn>
+Date:   Sat Apr 5 17:17:34 2014 +0800
+
+    Update Code: 1. Add SOCK_SKB_POOL socket flag for future use.
+
+diff --git a/module/fastsocket.c b/module/fastsocket.c
+index 3e7a349..2603797 100644
+--- a/module/fastsocket.c
++++ b/module/fastsocket.c
+@@ -738,6 +738,13 @@ out:
+ 	return err;
+ }
+ 
++static void fsocket_init_socket(struct socket *sock)
++{
++	if (enable_skb_pool) {
++		sock_set_flag(sock->sk, SOCK_SKB_POOL);
++	}
++}
++
+ static int fsocket_socket(int flags)
+ {
+ 	struct socket *sock;
+@@ -765,6 +772,8 @@ static int fsocket_socket(int flags)
+ 		goto free_sock;
+ 	}
+ 
++	fsocket_init_socket(sock);
++
+ 	err = fsock_map_fd(sock, flags);
+ 	if (err < 0) {
+ 		EPRINTK_LIMIT(ERR, "Map Socket FD failed\n");
+@@ -1530,6 +1539,7 @@ static void init_once(void *foo)
+ //#define MAX_FASTSOCKET_SKB_DATA_SIZE	( 2048 - sizeof(struct skb_shared_info) )
+ //#define MAX_FASTSOCKET_POOL_SKB_NUM	( 10 )
+ 
++#if 0
+ static int fastsocket_skb_init(void)
+ {	
+ 	int ret = 0;
+@@ -1539,7 +1549,6 @@ static int fastsocket_skb_init(void)
+ 	if (!enable_skb_pool)
+ 		return ret;
+ 
+-#if 0
+ 	printk(KERN_INFO "Fastsocket skb pool is enabled\n");
+ 
+ 	skb_head = kmem_cache_create("fastsocket_skb_cache", sizeof(struct sk_buff), 
+@@ -1581,11 +1590,11 @@ static int fastsocket_skb_init(void)
+ 
+ 	barrier();
+ 
+-#endif
+-
+ 	return ret;
+ }
+ 
++#endif
++
+ static int __init  fastsocket_init(void)
+ {
+ 	int ret = 0;
+@@ -1594,11 +1603,11 @@ static int __init  fastsocket_init(void)
+ 			num_online_cpus(), num_possible_cpus(),
+ 			num_present_cpus(), num_active_cpus());
+ 
+-	ret = fastsocket_skb_init();
+-	if (ret < 0) {
+-		EPRINTK_LIMIT(ERR, "Initialize fastsocket skb failded\n");
+-		return ret;
+-	}
++	//ret = fastsocket_skb_init();
++	//if (ret < 0) {
++	//	EPRINTK_LIMIT(ERR, "Initialize fastsocket skb failded\n");
++	//	return ret;
++	//}
+ 
+ 	ret = misc_register(&fastsocket_dev);
+ 	if (ret < 0) {
+
+commit 0274e2483b1027ef3e21a0a9e069b0b56a447be6
+Author: xiaofeng6 <xiaofeng6@staff.sina.com.cn>
+Date:   Fri Apr 4 23:32:14 2014 +0800
+
+    Update Code: 1. Improve stability by disabling local softirq when accessing skb pool when in process context.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index 43c6e37..4cd2d43 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -494,12 +494,15 @@ static inline struct sk_buff *alloc_skb(unsigned int size,
+ 					gfp_t priority)
+ {
+ 	struct sk_buff *skb;
+-	int clone = 0;
+ 
+-	if (enable_skb_pool && in_softirq())
+-		clone = POOL_SKB;
++	if (enable_skb_pool && likely(in_softirq())) {
++		//printk(KERN_DEBUG "Allocate pool skb in interrupt\n");
++		skb = __alloc_skb(size, priority, POOL_SKB, -1);
++	} else {
++		//printk(KERN_DEBUG "Allocate pool skb NOT in softirq\n");
++		skb = __alloc_skb(size, priority, 0, -1);
++	}
+ 
+-	skb = __alloc_skb(size, priority, clone, -1);
+ 	FPRINTK("Allocate skb 0x%p\n", skb);
+ 
+ 	return skb;
+@@ -509,12 +512,16 @@ static inline struct sk_buff *alloc_skb_fclone(unsigned int size,
+ 					       gfp_t priority)
+ {
+ 	struct sk_buff *skb;
+-	int clone = 1;
+ 
+-	if (enable_skb_pool && !in_interrupt())
+-		clone = POOL_SKB_CLONE;
++	if (enable_skb_pool && likely(!in_interrupt())) {
++		//printk(KERN_DEBUG "Allocate clone pool skb 0x%p NOT in interrupt\n", skb);
++		local_bh_disable();
++		skb = __alloc_skb(size, priority, POOL_SKB_CLONE, -1);
++		local_bh_enable();
++	} else {
++		skb = __alloc_skb(size, priority, 1, -1);
++	}
+ 
+-	skb = __alloc_skb(size, priority, clone, -1);
+ 	FPRINTK("Allocate clone skb 0x%p\n", skb);
+ 
+ 	return skb;
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index b6390e9..278258c 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -238,10 +238,10 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 		skb = __skb_dequeue(free_list);
+ 		//local_bh_enable();
+ 		//local_irq_restore(flags);
+-		if (skb)
+-			DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
+-					skb->pool_id, skb, smp_processor_id());
+-		if (!skb) {
++		//if (likely(skb))
++		//	DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
++		//			skb->pool_id, skb, smp_processor_id());
++		if (unlikely(!skb)) {
+ 			unsigned long flags;
+ 
+ 			DPRINTK("Splice %u skbs from recycle list\n", recyc_list->qlen);
+@@ -256,9 +256,10 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			data = skb->data_cache;
+ 			skb->pool_id = smp_processor_id();
+ 			goto init;
+-		} else 
+-			DPRINTK("Allocate skb failed from %d pool list\n", 
+-					smp_processor_id());
++		}
++		//} else 
++		//	DPRINTK("Allocate skb failed from %d pool list\n", 
++		//			smp_processor_id());
+ 	}
+ 
+ 	/* Get the HEAD */
+@@ -272,9 +273,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			gfp_mask, node);
+ 	if (!data)
+ 		goto nodata;
+-
+ init:
+-
+ 	DPRINTK("Initialize skb[%d] %p\n", skb->pool_id, skb);
+ 
+ 	/*
+@@ -472,12 +471,48 @@ static inline void kfree_pool_skb_clone(struct sk_buff *skb)
+ 
+ 	if (skb->pool_id == smp_processor_id()) {
+ 		__skb_queue_head(&skb_pool->clone_free_list, skb);
++		//if (likely(in_softirq())) {
++		//	__skb_queue_head(&skb_pool->clone_free_list, skb);
++		//	//printk(KERN_DEBUG "Free clone pool skb 0x%p in softirq\n", skb);
++		//} else {
++		//	//printk(KERN_DEBUG "Free clone pool skb 0x%p NOT in sofrirq\n", skb);
++		//	local_bh_disable();
++		//	__skb_queue_head(&skb_pool->clone_free_list, skb);
++		//	local_bh_disable();
++		//}
+ 		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into free list\n", skb->pool_id, skb, smp_processor_id());
+ 	} else {
+ 		skb_queue_head(&skb_pool->clone_recyc_list, skb);
+ 		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into recycle list\n", skb->pool_id, skb, smp_processor_id());
+ 	}
+ }
++
++static inline void kfree_pool_skb(struct sk_buff *skb)
++{
++	struct skb_pool *skb_pool;
++
++	BUG_ON(skb->pool_id < 0);
++	
++	skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
++
++	if (skb->pool_id == smp_processor_id()) {
++		if (in_softirq()) {
++			DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
++			//printk(KERN_DEBUG "Free pool skb 0x%p in softirq\n", skb);
++			__skb_queue_head(&skb_pool->free_list, skb);
++		} else {
++			local_bh_disable();
++			__skb_queue_head(&skb_pool->free_list, skb);
++			local_bh_enable();
++			//printk(KERN_DEBUG "Free pool skb 0x%p NOT in softirq\n", skb);
++		}
++		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into free list\n", skb->pool_id, skb, smp_processor_id());
++	} else {
++		skb_queue_head(&skb_pool->recyc_list, skb);
++		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into recycle list\n", skb->pool_id, skb, smp_processor_id());
++	}
++}
++
+ /*
+  *	Free an skbuff by memory without cleaning the state.
+  */
+@@ -491,33 +526,34 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+ 		if (skb->pool_id >= 0) {
+-			struct skb_pool *skb_pool;
+-			
+-		       	skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
+-
+-			if (skb->pool_id == smp_processor_id()) {
+-				//unsigned long flags;
+-
+-				//local_irq_save(flags);
+-				if (in_softirq()) {
+-					DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
+-					__skb_queue_head(&skb_pool->free_list, skb);
+-				} else {
+-					DPRINTK("Free skb[%d] 0x%p NOT in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
+-					local_bh_disable();
+-					__skb_queue_head(&skb_pool->free_list, skb);
+-					_local_bh_enable();
+-				}
+-				//local_irq_restore(flags);
+-
+-				DPRINTK("Put skb[%d] 0x%p into %d free list\n", 
+-						skb->pool_id, skb, skb->pool_id);
+-			}
+-			else {
+-				skb_queue_head(&skb_pool->recyc_list, skb);
+-				DPRINTK("Put skb[%d] 0x%p into %d recycle list\n", 
+-						skb->pool_id, skb, skb->pool_id);
+-			}
++			kfree_pool_skb(skb);
++			//struct skb_pool *skb_pool;
++			//
++		       	//skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
++
++			//if (skb->pool_id == smp_processor_id()) {
++			//	//unsigned long flags;
++
++			//	//local_irq_save(flags);
++			//	if (in_softirq()) {
++			//		DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
++			//		__skb_queue_head(&skb_pool->free_list, skb);
++			//	} else {
++			//		DPRINTK("Free skb[%d] 0x%p NOT in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
++			//		local_bh_disable();
++			//		__skb_queue_head(&skb_pool->free_list, skb);
++			//		_local_bh_enable();
++			//	}
++			//	//local_irq_restore(flags);
++
++			//	DPRINTK("Put skb[%d] 0x%p into %d free list\n", 
++			//			skb->pool_id, skb, skb->pool_id);
++			//}
++			//else {
++			//	skb_queue_head(&skb_pool->recyc_list, skb);
++			//	DPRINTK("Put skb[%d] 0x%p into %d recycle list\n", 
++			//			skb->pool_id, skb, skb->pool_id);
++			//}
+ 		} else {
+ 			DPRINTK("Free regular skb[%d] 0x%p\n", skb->pool_id, skb);
+ 			kmem_cache_free(skbuff_head_cache, skb);
+
+commit 3b43b53efce5f6f7094c6b658ac3a458ecb9d6e7
+Author: xiaofeng6 <xiaofeng6@staff.sina.com.cn>
+Date:   Fri Apr 4 16:12:02 2014 +0800
+
+    Update Code: 1. Add skb pool support for clone skb allocation.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index 58947d3..43c6e37 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -30,6 +30,11 @@
+ #include <linux/dmaengine.h>
+ #include <linux/hrtimer.h>
+ 
++#include <linux/hardirq.h>
++
++//#define FPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d] %s:%d\t" msg, smp_processor_id(), __FUNCTION__, __LINE__, ## args);
++#define FPRINTK(msg, args...)
++
+ /* Don't change this without changing skb_csum_unnecessary! */
+ #define CHECKSUM_NONE 0
+ #define CHECKSUM_UNNECESSARY 1
+@@ -482,16 +487,37 @@ extern void consume_skb(struct sk_buff *skb);
+ extern void	       __kfree_skb(struct sk_buff *skb);
+ extern struct sk_buff *__alloc_skb(unsigned int size,
+ 				   gfp_t priority, int fclone, int node);
++
++extern int enable_skb_pool;
++
+ static inline struct sk_buff *alloc_skb(unsigned int size,
+ 					gfp_t priority)
+ {
+-	return __alloc_skb(size, priority, 0, -1);
++	struct sk_buff *skb;
++	int clone = 0;
++
++	if (enable_skb_pool && in_softirq())
++		clone = POOL_SKB;
++
++	skb = __alloc_skb(size, priority, clone, -1);
++	FPRINTK("Allocate skb 0x%p\n", skb);
++
++	return skb;
+ }
+ 
+ static inline struct sk_buff *alloc_skb_fclone(unsigned int size,
+ 					       gfp_t priority)
+ {
+-	return __alloc_skb(size, priority, 1, -1);
++	struct sk_buff *skb;
++	int clone = 1;
++
++	if (enable_skb_pool && !in_interrupt())
++		clone = POOL_SKB_CLONE;
++
++	skb = __alloc_skb(size, priority, clone, -1);
++	FPRINTK("Allocate clone skb 0x%p\n", skb);
++
++	return skb;
+ }
+ 
+ static inline struct sk_buff *alloc_pool_skb_fclone(unsigned int size,
+@@ -1502,10 +1528,20 @@ static inline void __skb_queue_purge(struct sk_buff_head *list)
+  *
+  *	%NULL is returned if there is no free memory.
+  */
++
+ static inline struct sk_buff *__dev_alloc_skb(unsigned int length,
+ 					      gfp_t gfp_mask)
+ {
+-	struct sk_buff *skb = alloc_skb(length + NET_SKB_PAD, gfp_mask);
++	struct sk_buff *skb;
++
++	if (enable_skb_pool) {
++		skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, POOL_SKB, -1);
++		FPRINTK("Allocate pool skb 0x%p\n", skb);
++	} else {
++		skb = alloc_skb(length + NET_SKB_PAD, gfp_mask);
++		FPRINTK("Allocate regular skb 0x%p\n", skb);
++	}
++
+ 	if (likely(skb))
+ 		skb_reserve(skb, NET_SKB_PAD);
+ 	return skb;
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index 1b807d8..b6390e9 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -186,8 +186,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ {
+ 	struct kmem_cache *cache = NULL;
+ 	struct skb_pool *pool = NULL;
+-	struct sk_buff_head *free_list = NULL;
+-	struct sk_buff_head *recyc_list = NULL;
++	struct sk_buff_head *free_list = NULL, *recyc_list = NULL;
+ 	struct skb_shared_info *shinfo;
+ 	struct sk_buff *skb;
+ 	int clone;
+@@ -227,10 +226,18 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			return NULL;
+ 	}
+ 
++	DPRINTK("Enable skb_pool %d, skb clone %d-%d, slab %s, free_list 0x%p, recyc_list 0x%p, packet size %d\n", 
++			enable_skb_pool, clone, fclone, cache->name, free_list, recyc_list, size);
++
+ 	if (enable_skb_pool && free_list && recyc_list && 
+ 			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
++		//unsigned long flags;
+ 
+-		skb = skb_dequeue(free_list);
++		//local_irq_save(flags);
++		//local_bh_disable();
++		skb = __skb_dequeue(free_list);
++		//local_bh_enable();
++		//local_irq_restore(flags);
+ 		if (skb)
+ 			DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
+ 					skb->pool_id, skb, smp_processor_id());
+@@ -339,10 +346,13 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
+ 	int node = dev->dev.parent ? dev_to_node(dev->dev.parent) : -1;
+ 	struct sk_buff *skb;
+ 
+-	if (enable_skb_pool)
++	if (enable_skb_pool) {
+ 		skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, POOL_SKB, node);
+-	else
++		DPRINTK("Allocate pool skb 0x%p\n", skb);
++	} else {
+ 		skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, SLAB_SKB, node);
++		DPRINTK("Allocate regular skb 0x%p\n", skb);
++	}
+ 	if (likely(skb)) {
+ 		skb_reserve(skb, NET_SKB_PAD);
+ 		skb->dev = dev;
+@@ -452,6 +462,22 @@ static void skb_release_data(struct sk_buff *skb)
+ 	}
+ }
+ 
++static inline void kfree_pool_skb_clone(struct sk_buff *skb)
++{
++	struct skb_pool *skb_pool;
++
++	BUG_ON(skb->pool_id < 0);
++	
++	skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
++
++	if (skb->pool_id == smp_processor_id()) {
++		__skb_queue_head(&skb_pool->clone_free_list, skb);
++		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into free list\n", skb->pool_id, skb, smp_processor_id());
++	} else {
++		skb_queue_head(&skb_pool->clone_recyc_list, skb);
++		DPRINTK("Free clone pool skb[%d] 0x%p on CPU %d into recycle list\n", skb->pool_id, skb, smp_processor_id());
++	}
++}
+ /*
+  *	Free an skbuff by memory without cleaning the state.
+  */
+@@ -467,13 +493,23 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 		if (skb->pool_id >= 0) {
+ 			struct skb_pool *skb_pool;
+ 			
+-			DPRINTK("Free skb[%d] 0x%p on CPU %d\n", 
+-					skb->pool_id, skb, smp_processor_id())
+-
+ 		       	skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
+ 
+ 			if (skb->pool_id == smp_processor_id()) {
+-				skb_queue_head(&skb_pool->free_list, skb);
++				//unsigned long flags;
++
++				//local_irq_save(flags);
++				if (in_softirq()) {
++					DPRINTK("Free skb[%d] 0x%p in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
++					__skb_queue_head(&skb_pool->free_list, skb);
++				} else {
++					DPRINTK("Free skb[%d] 0x%p NOT in softirq on CPU %d\n", skb->pool_id, skb, smp_processor_id());
++					local_bh_disable();
++					__skb_queue_head(&skb_pool->free_list, skb);
++					_local_bh_enable();
++				}
++				//local_irq_restore(flags);
++
+ 				DPRINTK("Put skb[%d] 0x%p into %d free list\n", 
+ 						skb->pool_id, skb, skb->pool_id);
+ 			}
+@@ -490,8 +526,12 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 
+ 	case SKB_FCLONE_ORIG:
+ 		fclone_ref = (atomic_t *) (skb + 2);
+-		if (atomic_dec_and_test(fclone_ref))
+-			kmem_cache_free(skbuff_fclone_cache, skb);
++		if (atomic_dec_and_test(fclone_ref)) {
++			if (skb->pool_id >= 0)
++				kfree_pool_skb_clone(skb);
++			else
++				kmem_cache_free(skbuff_fclone_cache, skb);
++		}
+ 		break;
+ 
+ 	case SKB_FCLONE_CLONE:
+@@ -503,8 +543,12 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 		 */
+ 		skb->fclone = SKB_FCLONE_UNAVAILABLE;
+ 
+-		if (atomic_dec_and_test(fclone_ref))
+-			kmem_cache_free(skbuff_fclone_cache, other);
++		if (atomic_dec_and_test(fclone_ref)) {
++			if (skb->pool_id >= 0)
++				kfree_pool_skb_clone(other);
++			else
++				kmem_cache_free(skbuff_fclone_cache, other);
++		}
+ 		break;
+ 	}
+ }
+@@ -3123,6 +3167,7 @@ void __init skb_init(void)
+ 		skb_queue_head_init(&skb_pool->free_list);
+ 		skb_queue_head_init(&skb_pool->recyc_list);
+ 		skb_pool->pool_hit = skb_pool->slab_hit = 0;
++
+ 		skb_queue_head_init(&skb_pool->clone_free_list);
+ 		skb_queue_head_init(&skb_pool->clone_recyc_list);
+ 		skb_pool->clone_pool_hit = skb_pool->clone_slab_hit = 0;
+
+commit 13e160b4c7c92f509950cbcc52a7dfda9f8249bb
+Author: Breezewoods <jerrylin.lxf@gmail.com>
+Date:   Sat Mar 8 23:55:08 2014 +0800
+
+    Update Code: 1. Remove debug. 2. Add pool and slab allocation count in proc. 3. Add SOCK_SKB_POOL flag to enable clone skb pool when send some TCP packet. 3. Reset proc statistics. 4. Adjust proc ouput format. 5 Put all skb pool information into a new stucture.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index b4a8e0f..58947d3 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -228,6 +228,12 @@ struct skb_shared_info {
+ struct skb_pool {
+ 	struct sk_buff_head free_list;
+ 	struct sk_buff_head recyc_list;
++	struct sk_buff_head clone_free_list;
++	struct sk_buff_head clone_recyc_list;
++	unsigned long pool_hit;
++	unsigned long slab_hit;
++	unsigned long clone_pool_hit;
++	unsigned long clone_slab_hit;
+ };
+ 
+ /* We divide dataref into two halves.  The higher 16 bits hold references
+@@ -251,10 +257,10 @@ enum {
+ 	SKB_FCLONE_CLONE,
+ };
+ 
+-#define REGULAR_SKB		0
+-#define REGULAR_SKB_CLONE	1
+-#define POOL_SKB		2
+-#define POOL_SKB_CLONE		3
++#define SLAB_SKB	0
++#define SLAB_SKB_CLONE	1
++#define POOL_SKB	2
++#define POOL_SKB_CLONE	3
+ 
+ enum {
+ 	SKB_GSO_TCPV4 = 1 << 0,
+@@ -488,6 +494,12 @@ static inline struct sk_buff *alloc_skb_fclone(unsigned int size,
+ 	return __alloc_skb(size, priority, 1, -1);
+ }
+ 
++static inline struct sk_buff *alloc_pool_skb_fclone(unsigned int size,
++					       gfp_t priority)
++{
++	return __alloc_skb(size, priority, POOL_SKB_CLONE, -1);
++}
++
+ extern int skb_recycle_check(struct sk_buff *skb, int skb_size);
+ 
+ extern struct sk_buff *skb_morph(struct sk_buff *dst, struct sk_buff *src);
+diff --git a/kernel/include/net/sock.h b/kernel/include/net/sock.h
+index a20ca0e..a300385 100644
+--- a/kernel/include/net/sock.h
++++ b/kernel/include/net/sock.h
+@@ -554,6 +554,7 @@ enum sock_flags {
+ 	SOCK_TIMESTAMPING_SYS_HARDWARE, /* %SOF_TIMESTAMPING_SYS_HARDWARE */
+ 	SOCK_RXQ_OVFL,
+ 	SOCK_ZEROCOPY, /* buffers from userspace */
++	SOCK_SKB_POOL, /* use skb pool when xmit skb from the socket */	
+ };
+ 
+ static inline void sock_copy_flags(struct sock *nsk, struct sock *osk)
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index a38555b..1b807d8 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -70,7 +70,9 @@
+ 
+ #include "kmap_skb.h"
+ 
+-#define DPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d][PID-%d] %s:%d\t" msg, smp_processor_id(), current->pid, __FUNCTION__, __LINE__, ## args);
++#define DPRINTK(msg, args...) 
++
++//#define DPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d][PID-%d] %s:%d\t" msg, smp_processor_id(), current->pid, __FUNCTION__, __LINE__, ## args);
+ 
+ static struct kmem_cache *skbuff_head_cache __read_mostly;
+ static struct kmem_cache *skbuff_fclone_cache __read_mostly;
+@@ -175,7 +177,7 @@ EXPORT_SYMBOL(skb_under_panic);
+  */
+ 
+ int enable_skb_pool = 0;
+-struct skb_pool __percpu *skb_pools, *skb_clone_pools;
++struct skb_pool __percpu *skb_pools;
+ 
+ EXPORT_SYMBOL(enable_skb_pool);
+ 
+@@ -183,57 +185,65 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			    int fclone, int node)
+ {
+ 	struct kmem_cache *cache = NULL;
+-	struct skb_pool *pools = NULL;
++	struct skb_pool *pool = NULL;
++	struct sk_buff_head *free_list = NULL;
++	struct sk_buff_head *recyc_list = NULL;
+ 	struct skb_shared_info *shinfo;
+ 	struct sk_buff *skb;
+ 	int clone;
+ 	u8 *data;
+ 
+-	size = SKB_DATA_ALIGN(size);
++	pool = per_cpu_ptr(skb_pools, smp_processor_id());
+ 
++	size = SKB_DATA_ALIGN(size);
+ 	//cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
+ 
+ 	switch (fclone) {
+-		case REGULAR_SKB:
++		case SLAB_SKB:
+ 			cache = skbuff_head_cache;
+ 			clone = 0;
++			pool->slab_hit++;
+ 			break;
+-		case REGULAR_SKB_CLONE:
++		case SLAB_SKB_CLONE:
+ 			cache = skbuff_fclone_cache;
+ 			clone = 1;
++			pool->clone_slab_hit++;
+ 			break;
+ 		case POOL_SKB:
+-			pools = skb_pools;
++			free_list = &pool->free_list;
++			recyc_list = &pool->recyc_list;
+ 			cache = skbuff_head_cache;
+ 			clone = 0;
++			pool->pool_hit++;
+ 			break;
+ 		case POOL_SKB_CLONE:
+-			pools = skb_clone_pools;
++			free_list = &pool->clone_free_list;
++			recyc_list = &pool->clone_recyc_list;
+ 			cache = skbuff_fclone_cache;
+ 			clone = 1;
++			pool->clone_pool_hit++;
+ 			break;
+ 		default:
+ 			return NULL;
+ 	}
+ 
+-	if (enable_skb_pool && pools && size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
+-		struct skb_pool *skb_pool;
++	if (enable_skb_pool && free_list && recyc_list && 
++			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
+ 
+-		skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
+-		skb = skb_dequeue(&skb_pool->free_list);
++		skb = skb_dequeue(free_list);
+ 		if (skb)
+ 			DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
+ 					skb->pool_id, skb, smp_processor_id());
+ 		if (!skb) {
+ 			unsigned long flags;
+ 
+-			DPRINTK("Splice %u skbs from recycle list\n", skb_pool->recyc_list.qlen);
++			DPRINTK("Splice %u skbs from recycle list\n", recyc_list->qlen);
+ 
+-			spin_lock_irqsave(&(skb_pool->recyc_list.lock), flags);
+-			skb_queue_splice_init(&skb_pool->recyc_list, &skb_pool->free_list);
+-			spin_unlock_irqrestore(&(skb_pool->recyc_list.lock), flags);
++			spin_lock_irqsave(&recyc_list->lock, flags);
++			skb_queue_splice_init(recyc_list, free_list);
++			spin_unlock_irqrestore(&recyc_list->lock, flags);
+ 
+-			skb = skb_dequeue(&skb_pool->free_list);
++			skb = skb_dequeue(free_list);
+ 		}
+ 		if (skb) {
+ 			data = skb->data_cache;
+@@ -329,7 +339,10 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
+ 	int node = dev->dev.parent ? dev_to_node(dev->dev.parent) : -1;
+ 	struct sk_buff *skb;
+ 
+-	skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, POOL_SKB, node);
++	if (enable_skb_pool)
++		skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, POOL_SKB, node);
++	else
++		skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, SLAB_SKB, node);
+ 	if (likely(skb)) {
+ 		skb_reserve(skb, NET_SKB_PAD);
+ 		skb->dev = dev;
+@@ -451,7 +464,6 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+-		//if (enable_skb_pool && skb->pool_id >= 0) {
+ 		if (skb->pool_id >= 0) {
+ 			struct skb_pool *skb_pool;
+ 			
+@@ -2995,8 +3007,11 @@ static void skb_pool_seq_stop(struct seq_file *seq, void *v)
+ 
+ static void *skb_pool_seq_start(struct seq_file *seq, loff_t *pos)
+ {
+-	seq_printf(seq, "%s\t%-15s%-15s\n",
+-		"CPU", "Free_num", "Recycel_num");
++	seq_printf(seq, "%s\t%-15s%-15s%-15s%-15s%-15s%-15s%-15s%-15s\n",
++		"CPU", "Free", "Recycle", 
++		"Pool_hit", "Slab_hit", 
++		"C_free", "C_recycle", 
++		"C_pool_hit", "C_slab_hit");
+ 		
+ 	cpu_id = 0;
+ 
+@@ -3007,8 +3022,11 @@ static int skb_pool_seq_show(struct seq_file *seq, void *v)
+ {
+ 	struct skb_pool *s = v;
+ 
+-	seq_printf(seq, "%u\t%-15u%-15u\n", 
+-		cpu_id, s->free_list.qlen, s->recyc_list.qlen);
++	seq_printf(seq, "%u\t%-15u%-15u%-15lu%-15lu%-15u%-15u%-15lu%-15lu\n", 
++		cpu_id, s->free_list.qlen, s->recyc_list.qlen, 
++		s->pool_hit, s->slab_hit,
++		s->clone_free_list.qlen, s->clone_recyc_list.qlen, 
++		s->clone_pool_hit, s->clone_slab_hit);
+ 
+ 	return 0;
+ }
+@@ -3024,12 +3042,28 @@ static int skb_pool_seq_open(struct inode *inode, struct file *file)
+ 	return seq_open(file, &skb_pool_seq_ops);
+ }
+ 
++ssize_t skb_pool_reset(struct file *file, const char __user *buf, size_t size, loff_t *ppos)
++{
++	int cpu;
++	struct skb_pool *skb_pool;
++
++	for_each_online_cpu(cpu) {
++		skb_pool = per_cpu_ptr(skb_pools, cpu);
++		skb_pool->slab_hit = 0;
++		skb_pool->clone_slab_hit = 0;
++		skb_pool->pool_hit = 0;
++		skb_pool->clone_pool_hit = 0;
++	}
++
++	return 1;
++}
+ static const struct file_operations skb_pool_fops = {
+ 	.owner	 = THIS_MODULE,
+ 	.open    = skb_pool_seq_open,
+ 	.read    = seq_read,
+ 	.llseek  = seq_lseek,
+ 	.release = seq_release,
++	.write   = skb_pool_reset,
+ };
+ 
+ static inline void skb_init_pool_id(void *foo)
+@@ -3078,18 +3112,20 @@ void __init skb_init(void)
+ 						NULL);
+ 
+ 	skb_pools = alloc_percpu(struct skb_pool);
+-	skb_clone_pools = alloc_percpu(struct skb_pool);
++	//skb_clone_pools = alloc_percpu(struct skb_pool);
+ 
+ 	for_each_online_cpu(cpu) {
+ 		int i;
+ 		struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, cpu);
+-		struct skb_pool *skb_clone_pool = per_cpu_ptr(skb_clone_pools, cpu);
++		//struct skb_pool *skb_clone_pool = per_cpu_ptr(skb_clone_pools, cpu);
+ 		struct sk_buff *skb;
+ 
+ 		skb_queue_head_init(&skb_pool->free_list);
+ 		skb_queue_head_init(&skb_pool->recyc_list);
+-		skb_queue_head_init(&skb_clone_pool->free_list);
+-		skb_queue_head_init(&skb_clone_pool->recyc_list);
++		skb_pool->pool_hit = skb_pool->slab_hit = 0;
++		skb_queue_head_init(&skb_pool->clone_free_list);
++		skb_queue_head_init(&skb_pool->clone_recyc_list);
++		skb_pool->clone_pool_hit = skb_pool->clone_slab_hit = 0;
+ 
+ 		for (i = 0; i < MAX_FASTSOCKET_POOL_SKB_NUM; i++) {
+ 			//FIXME: GFP_FLAG may take some considieration.
+@@ -3107,7 +3143,7 @@ void __init skb_init(void)
+ 			skb->data_cache = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
+ 					GFP_KERNEL, cpu_to_node(cpu));
+ 			skb->pool_id = cpu;
+-			skb_queue_head(&skb_clone_pool->free_list, skb);
++			skb_queue_head(&skb_pool->clone_free_list, skb);
+ 		}
+ 	}
+ 	
+diff --git a/kernel/net/ipv4/tcp.c b/kernel/net/ipv4/tcp.c
+index 414f590..5add1f4 100644
+--- a/kernel/net/ipv4/tcp.c
++++ b/kernel/net/ipv4/tcp.c
+@@ -685,7 +685,10 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
+ 	/* The TCP header must be at least 32-bit aligned.  */
+ 	size = ALIGN(size, 4);
+ 
+-	skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
++	if (sock_flag(sk, SOCK_SKB_POOL))
++		skb = alloc_pool_skb_fclone(size + sk->sk_prot->max_header, gfp);
++	else
++		skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
+ 	if (skb) {
+ 		if (sk_wmem_schedule(sk, skb->truesize)) {
+ 			/*
+
+commit ed0230566b33f84b7123d4ac3076867503189d50
+Author: Breezewoods <jerrylin.lxf@gmail.com>
+Date:   Fri Mar 7 23:09:56 2014 +0800
+
+    Update Code: 1. Add two skb allocation flags: POOL_SKB and POOL_CLONE_SKB. 2. Use POOL_SKB in __netdev_alloc_skb.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index abe368c..b4a8e0f 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -251,6 +251,11 @@ enum {
+ 	SKB_FCLONE_CLONE,
+ };
+ 
++#define REGULAR_SKB		0
++#define REGULAR_SKB_CLONE	1
++#define POOL_SKB		2
++#define POOL_SKB_CLONE		3
++
+ enum {
+ 	SKB_GSO_TCPV4 = 1 << 0,
+ 	SKB_GSO_UDP = 1 << 1,
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index b08e06d..a38555b 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -74,7 +74,8 @@
+ 
+ static struct kmem_cache *skbuff_head_cache __read_mostly;
+ static struct kmem_cache *skbuff_fclone_cache __read_mostly;
+-static struct kmem_cache *skbuff_fastsocket_cache __read_mostly;
++static struct kmem_cache *fastsocket_skbuff_head_cache __read_mostly;
++static struct kmem_cache *fastsocket_skbuff_fclone_cache __read_mostly;
+ 
+ static void sock_pipe_buf_release(struct pipe_inode_info *pipe,
+ 				  struct pipe_buffer *buf)
+@@ -174,25 +175,48 @@ EXPORT_SYMBOL(skb_under_panic);
+  */
+ 
+ int enable_skb_pool = 0;
+-struct skb_pool __percpu *skb_pools = NULL;
++struct skb_pool __percpu *skb_pools, *skb_clone_pools;
+ 
+ EXPORT_SYMBOL(enable_skb_pool);
+-EXPORT_SYMBOL(skb_pools);
+ 
+ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			    int fclone, int node)
+ {
+-	struct kmem_cache *cache;
++	struct kmem_cache *cache = NULL;
++	struct skb_pool *pools = NULL;
+ 	struct skb_shared_info *shinfo;
+ 	struct sk_buff *skb;
++	int clone;
+ 	u8 *data;
+ 
+ 	size = SKB_DATA_ALIGN(size);
+ 
+-	cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
++	//cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
+ 
+-	if (in_softirq() && !fclone && enable_skb_pool && skb_pools &&
+-			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
++	switch (fclone) {
++		case REGULAR_SKB:
++			cache = skbuff_head_cache;
++			clone = 0;
++			break;
++		case REGULAR_SKB_CLONE:
++			cache = skbuff_fclone_cache;
++			clone = 1;
++			break;
++		case POOL_SKB:
++			pools = skb_pools;
++			cache = skbuff_head_cache;
++			clone = 0;
++			break;
++		case POOL_SKB_CLONE:
++			pools = skb_clone_pools;
++			cache = skbuff_fclone_cache;
++			clone = 1;
++			break;
++		default:
++			return NULL;
++	}
++
++	if (enable_skb_pool && pools && size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
+ 		struct skb_pool *skb_pool;
+ 
+ 		skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
+@@ -226,9 +250,6 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 		goto out;
+ 	DPRINTK("Allocate regular skb[%d] 0x%p\n", skb->pool_id, skb);
+ 
+-	/* Mark it is a skb from regular cache */
+-	skb->pool_id = -1;
+-
+ 	//size = SKB_DATA_ALIGN(size);
+ 	data = kmalloc_node_track_caller(size + sizeof(struct skb_shared_info),
+ 			gfp_mask, node);
+@@ -269,7 +290,7 @@ init:
+ 	skb_frag_list_init(skb);
+ 	memset(&shinfo->hwtstamps, 0, sizeof(shinfo->hwtstamps));
+ 
+-	if (fclone) {
++	if (clone) {
+ 		struct sk_buff *child = skb + 1;
+ 		atomic_t *fclone_ref = (atomic_t *) (child + 1);
+ 
+@@ -308,7 +329,7 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
+ 	int node = dev->dev.parent ? dev_to_node(dev->dev.parent) : -1;
+ 	struct sk_buff *skb;
+ 
+-	skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, 0, node);
++	skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask, POOL_SKB, node);
+ 	if (likely(skb)) {
+ 		skb_reserve(skb, NET_SKB_PAD);
+ 		skb->dev = dev;
+@@ -426,7 +447,7 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 	struct sk_buff *other;
+ 	atomic_t *fclone_ref;
+ 
+-	barrier();
++	//barrier();
+ 
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+@@ -3044,40 +3065,50 @@ void __init skb_init(void)
+ 						SLAB_HWCACHE_ALIGN|SLAB_PANIC,
+ 						skb_init_pool_id_clone);
+ 
+-	skbuff_fastsocket_cache = kmem_cache_create("skbuff_fastsocket_cache", 
++	fastsocket_skbuff_head_cache = kmem_cache_create("fastsocket_skbuff_head_cache", 
+ 						sizeof(struct sk_buff), 
+ 						0, 
+ 						SLAB_HWCACHE_ALIGN | SLAB_PANIC, 
+ 						NULL);
++	fastsocket_skbuff_fclone_cache = kmem_cache_create("fastsocket_skbuff_fclone_cache", 
++						(2*sizeof(struct sk_buff)) + 
++						sizeof(atomic_t), 
++						0, 
++						SLAB_HWCACHE_ALIGN | SLAB_PANIC, 
++						NULL);
+ 
+ 	skb_pools = alloc_percpu(struct skb_pool);
+-	//if (!skb_pools) {
+-	//	EPRINTK_LIMIT(ERR, "Allocate skb pool table failed\n");
+-	//	return -ENOMEM;
+-	//}
++	skb_clone_pools = alloc_percpu(struct skb_pool);
+ 
+ 	for_each_online_cpu(cpu) {
+ 		int i;
+ 		struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, cpu);
++		struct skb_pool *skb_clone_pool = per_cpu_ptr(skb_clone_pools, cpu);
+ 		struct sk_buff *skb;
+ 
+ 		skb_queue_head_init(&skb_pool->free_list);
+ 		skb_queue_head_init(&skb_pool->recyc_list);
++		skb_queue_head_init(&skb_clone_pool->free_list);
++		skb_queue_head_init(&skb_clone_pool->recyc_list);
+ 
+ 		for (i = 0; i < MAX_FASTSOCKET_POOL_SKB_NUM; i++) {
+ 			//FIXME: GFP_FLAG may take some considieration.
+-			skb = kmem_cache_alloc_node(skbuff_fastsocket_cache, GFP_KERNEL, cpu_to_node(cpu));
+ 			//FIXME: Need more carefull release.
+-			//if (!skb)
+-			//	return -ENOMEM;
++			skb = kmem_cache_alloc_node(fastsocket_skbuff_head_cache, GFP_KERNEL, cpu_to_node(cpu));
+ 			skb->data_cache = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
+ 					GFP_KERNEL, cpu_to_node(cpu));
+-			//FIXME: Need more carefull release.
+-			//if (!skb->data_cache)
+-			//	return -ENOMEM;
+ 			skb->pool_id = cpu;
+ 			skb_queue_head(&skb_pool->free_list, skb);
+ 		}
++		for (i = 0; i < MAX_FASTSOCKET_POOL_SKB_NUM; i++) {
++			//FIXME: GFP_FLAG may take some considieration.
++			//FIXME: Need more carefull release.
++			skb = kmem_cache_alloc_node(fastsocket_skbuff_fclone_cache, GFP_KERNEL, cpu_to_node(cpu));
++			skb->data_cache = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
++					GFP_KERNEL, cpu_to_node(cpu));
++			skb->pool_id = cpu;
++			skb_queue_head(&skb_clone_pool->free_list, skb);
++		}
+ 	}
+ 	
+ 	proc_net_fops_create(&init_net, "skb_pool", S_IRUGO, &skb_pool_fops);
+
+commit ea3da0298667affffe2820d049645397fed3c92e
+Author: Breezewoods <jerrylin.lxf@gmail.com>
+Date:   Fri Mar 7 16:32:23 2014 +0800
+
+    Update Code: 1. When freeing skb, checking pool_id will be enough.
+
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index 3113247..b08e06d 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -201,10 +201,15 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
+ 					skb->pool_id, skb, smp_processor_id());
+ 		if (!skb) {
+-			skb = skb_dequeue(&skb_pool->recyc_list);
+-			if (skb)
+-				DPRINTK("Allocate skb[%d] 0x%p from %d recycle list\n", 
+-						skb->pool_id, skb, smp_processor_id());
++			unsigned long flags;
++
++			DPRINTK("Splice %u skbs from recycle list\n", skb_pool->recyc_list.qlen);
++
++			spin_lock_irqsave(&(skb_pool->recyc_list.lock), flags);
++			skb_queue_splice_init(&skb_pool->recyc_list, &skb_pool->free_list);
++			spin_unlock_irqrestore(&(skb_pool->recyc_list.lock), flags);
++
++			skb = skb_dequeue(&skb_pool->free_list);
+ 		}
+ 		if (skb) {
+ 			data = skb->data_cache;
+@@ -425,9 +430,8 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+-		//if (enable_skb_pool && skb_pools && skb->pool_id >= 0) {
+-		if (enable_skb_pool && skb->pool_id >= 0) {
+-		//if (skb->pool_id >= 0) {
++		//if (enable_skb_pool && skb->pool_id >= 0) {
++		if (skb->pool_id >= 0) {
+ 			struct skb_pool *skb_pool;
+ 			
+ 			DPRINTK("Free skb[%d] 0x%p on CPU %d\n", 
+
+commit aea47d67918712ce5def8eab767129dec2fde68e
+Author: root <root@S-LAB-45.(none)>
+Date:   Fri Mar 7 14:07:16 2014 +0800
+
+    Update Code: 1. Add statistics proc and Add constucter for skb_pool cache.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index 40136a5..abe368c 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -441,7 +441,7 @@ struct sk_buff {
+ 
+ #define MAX_FASTSOCKET_SKB_RAW_SIZE     ( 2048 )
+ #define MAX_FASTSOCKET_SKB_DATA_SIZE    ( 2048 - sizeof(struct skb_shared_info) )
+-#define MAX_FASTSOCKET_POOL_SKB_NUM     ( 10 )
++#define MAX_FASTSOCKET_POOL_SKB_NUM     ( 1024 )
+ 
+ #ifdef __KERNEL__
+ /*
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index 98e939d..3113247 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -74,6 +74,7 @@
+ 
+ static struct kmem_cache *skbuff_head_cache __read_mostly;
+ static struct kmem_cache *skbuff_fclone_cache __read_mostly;
++static struct kmem_cache *skbuff_fastsocket_cache __read_mostly;
+ 
+ static void sock_pipe_buf_release(struct pipe_inode_info *pipe,
+ 				  struct pipe_buffer *buf)
+@@ -172,8 +173,9 @@ EXPORT_SYMBOL(skb_under_panic);
+  *	%GFP_ATOMIC.
+  */
+ 
+-volatile int enable_skb_pool = 0;
++int enable_skb_pool = 0;
+ struct skb_pool __percpu *skb_pools = NULL;
++
+ EXPORT_SYMBOL(enable_skb_pool);
+ EXPORT_SYMBOL(skb_pools);
+ 
+@@ -423,7 +425,9 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+-		if (enable_skb_pool && skb_pools && skb->pool_id >= 0) {
++		//if (enable_skb_pool && skb_pools && skb->pool_id >= 0) {
++		if (enable_skb_pool && skb->pool_id >= 0) {
++		//if (skb->pool_id >= 0) {
+ 			struct skb_pool *skb_pool;
+ 			
+ 			DPRINTK("Free skb[%d] 0x%p on CPU %d\n", 
+@@ -2936,19 +2940,143 @@ done:
+ }
+ EXPORT_SYMBOL_GPL(skb_gro_receive);
+ 
++static volatile unsigned cpu_id;
++
++static struct skb_pool *skb_pool_get_online(loff_t *pos)
++{
++	struct skb_pool *rc = NULL;
++
++	while (*pos < nr_cpu_ids)
++		if (cpu_online(*pos)) {
++			rc = per_cpu_ptr(skb_pools, *pos);
++			break;
++		} else
++			++*pos;
++	cpu_id = *pos;
++
++	return rc;
++}
++
++static void *skb_pool_seq_next(struct seq_file *seq, void *v, loff_t *pos)
++{
++	++*pos;
++	return skb_pool_get_online(pos);
++}
++
++static void skb_pool_seq_stop(struct seq_file *seq, void *v)
++{
++
++}
++
++static void *skb_pool_seq_start(struct seq_file *seq, loff_t *pos)
++{
++	seq_printf(seq, "%s\t%-15s%-15s\n",
++		"CPU", "Free_num", "Recycel_num");
++		
++	cpu_id = 0;
++
++	return skb_pool_get_online(pos);
++}
++
++static int skb_pool_seq_show(struct seq_file *seq, void *v)
++{
++	struct skb_pool *s = v;
++
++	seq_printf(seq, "%u\t%-15u%-15u\n", 
++		cpu_id, s->free_list.qlen, s->recyc_list.qlen);
++
++	return 0;
++}
++static const struct seq_operations skb_pool_seq_ops = {
++	.start = skb_pool_seq_start,
++	.next  = skb_pool_seq_next,
++	.stop  = skb_pool_seq_stop,
++	.show  = skb_pool_seq_show,
++};
++
++static int skb_pool_seq_open(struct inode *inode, struct file *file)
++{
++	return seq_open(file, &skb_pool_seq_ops);
++}
++
++static const struct file_operations skb_pool_fops = {
++	.owner	 = THIS_MODULE,
++	.open    = skb_pool_seq_open,
++	.read    = seq_read,
++	.llseek  = seq_lseek,
++	.release = seq_release,
++};
++
++static inline void skb_init_pool_id(void *foo)
++{
++	struct sk_buff *skb = (struct sk_buff *)foo;
++
++	skb->pool_id = -1;
++}
++
++static inline void skb_init_pool_id_clone(void *foo)
++{
++	struct sk_buff *skb, *cskb;
++
++	skb = (struct sk_buff *)foo;
++	cskb = skb + 1;
++
++	skb->pool_id = cskb->pool_id = -1;
++}
++
+ void __init skb_init(void)
+ {
++	int cpu;
++
+ 	skbuff_head_cache = kmem_cache_create("skbuff_head_cache",
+ 					      sizeof(struct sk_buff),
+ 					      0,
+ 					      SLAB_HWCACHE_ALIGN|SLAB_PANIC,
+-					      NULL);
++					      skb_init_pool_id);
+ 	skbuff_fclone_cache = kmem_cache_create("skbuff_fclone_cache",
+ 						(2*sizeof(struct sk_buff)) +
+ 						sizeof(atomic_t),
+ 						0,
+ 						SLAB_HWCACHE_ALIGN|SLAB_PANIC,
++						skb_init_pool_id_clone);
++
++	skbuff_fastsocket_cache = kmem_cache_create("skbuff_fastsocket_cache", 
++						sizeof(struct sk_buff), 
++						0, 
++						SLAB_HWCACHE_ALIGN | SLAB_PANIC, 
+ 						NULL);
++
++	skb_pools = alloc_percpu(struct skb_pool);
++	//if (!skb_pools) {
++	//	EPRINTK_LIMIT(ERR, "Allocate skb pool table failed\n");
++	//	return -ENOMEM;
++	//}
++
++	for_each_online_cpu(cpu) {
++		int i;
++		struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, cpu);
++		struct sk_buff *skb;
++
++		skb_queue_head_init(&skb_pool->free_list);
++		skb_queue_head_init(&skb_pool->recyc_list);
++
++		for (i = 0; i < MAX_FASTSOCKET_POOL_SKB_NUM; i++) {
++			//FIXME: GFP_FLAG may take some considieration.
++			skb = kmem_cache_alloc_node(skbuff_fastsocket_cache, GFP_KERNEL, cpu_to_node(cpu));
++			//FIXME: Need more carefull release.
++			//if (!skb)
++			//	return -ENOMEM;
++			skb->data_cache = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
++					GFP_KERNEL, cpu_to_node(cpu));
++			//FIXME: Need more carefull release.
++			//if (!skb->data_cache)
++			//	return -ENOMEM;
++			skb->pool_id = cpu;
++			skb_queue_head(&skb_pool->free_list, skb);
++		}
++	}
++	
++	proc_net_fops_create(&init_net, "skb_pool", S_IRUGO, &skb_pool_fops);
+ }
+ 
+ /**
+diff --git a/module/fastsocket.c b/module/fastsocket.c
+index 857f97a..3e7a349 100644
+--- a/module/fastsocket.c
++++ b/module/fastsocket.c
+@@ -31,7 +31,7 @@
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Xiaofeng Lin <sina.com.cn>");
+-MODULE_VERSION("1.0.0.SP");
++MODULE_VERSION("1.0.0.SP.1");
+ MODULE_DESCRIPTION("Fastsocket which provides scalable and thus high kernel performance for socket application");
+ 
+ static int enable_fastsocket_debug = 3;
+@@ -39,19 +39,19 @@ static int enable_listen_spawn = 2;
+ extern int enable_receive_flow_deliver;
+ static int enable_fast_epoll = 1;
+ extern int enable_skb_pool;
+-static int enable_fastsocket_skb_pool;
+ 
+ module_param(enable_fastsocket_debug,int, 0);
+ module_param(enable_listen_spawn, int, 0);
+ module_param(enable_receive_flow_deliver, int, 0);
+ module_param(enable_fast_epoll, int, 0);
+-module_param(enable_fastsocket_skb_pool, int, 0);
++module_param(enable_skb_pool, int, 0);
++
+ 
+ MODULE_PARM_DESC(enable_fastsocket_debug, " Debug level [Default: 3]" );
+ MODULE_PARM_DESC(enable_listen_spawn, " Control Listen-Spawn: 0 = Disbale, 1 = Process affinity required, 2 = Autoset process affinity[Default]");
+ MODULE_PARM_DESC(enable_receive_flow_deliver, " Control Receive-Flow-Deliver: 0 = Disbale[Default], 1 = Enabled");
+ MODULE_PARM_DESC(enable_fast_epoll, " Control Fast-Epoll: 0 = Disbale, 1 = Enabled[Default]");
+-MODULE_PARM_DESC(enable_fastsocket_skb_pool, " Control Skb-Pool: 0 = Disbale[Default], 1 = Enabled[Default]");
++MODULE_PARM_DESC(enable_skb_pool, " Control Skb-Pool: 0 = Disbale[Default], 1 = Enabled[Default]");
+ 
+ int inline fsocket_get_dbg_level(void)
+ {
+@@ -1523,8 +1523,8 @@ static void init_once(void *foo)
+ 	inode_init_once(&ei->vfs_inode);
+ }
+ 
+-static struct kmem_cache *skb_head __read_mostly;
+-extern struct skb_pool __percpu *skb_pools;
++//static struct kmem_cache *skb_head __read_mostly;
++//extern struct skb_pool __percpu *skb_pools;
+ 
+ //#define MAX_FASTSOCKET_SKB_RAW_SIZE	( 2048 )
+ //#define MAX_FASTSOCKET_SKB_DATA_SIZE	( 2048 - sizeof(struct skb_shared_info) )
+@@ -1532,13 +1532,14 @@ extern struct skb_pool __percpu *skb_pools;
+ 
+ static int fastsocket_skb_init(void)
+ {	
+-	int cpu, ret = 0;
++	int ret = 0;
+ 
+ 	printk(KERN_INFO "Size: head-%ld, sinfo-%ld\n", sizeof(struct sk_buff), sizeof(struct skb_shared_info));
+ 
+-	if (!enable_fastsocket_skb_pool)
++	if (!enable_skb_pool)
+ 		return ret;
+ 
++#if 0
+ 	printk(KERN_INFO "Fastsocket skb pool is enabled\n");
+ 
+ 	skb_head = kmem_cache_create("fastsocket_skb_cache", sizeof(struct sk_buff), 
+@@ -1580,6 +1581,8 @@ static int fastsocket_skb_init(void)
+ 
+ 	barrier();
+ 
++#endif
++
+ 	return ret;
+ }
+ 
+@@ -1633,7 +1636,7 @@ static int __init  fastsocket_init(void)
+ 		printk(KERN_INFO "Fastsocket: Enable Recieve Flow Deliver\n");
+ 	if (enable_fast_epoll)
+ 		printk(KERN_INFO "Fastsocket: Enable Fast Epoll\n");
+-	if (enable_fastsocket_skb_pool)
++	if (enable_skb_pool)
+ 		printk(KERN_INFO "Fastsocket: Enable Skb Pool\n");
+ 
+ 	return ret;
+@@ -1659,7 +1662,6 @@ static void __exit fastsocket_exit(void)
+ 		printk(KERN_INFO "Fastsocket: Disable Skb Pool\n");
+ 	}
+ 
+-
+ 	printk(KERN_INFO "Fastsocket: Remove Module\n");
+ }
+ 
+
+commit f506c2013a022136acea579b5196e31ddaf9bbec
+Author: root <root@S-LAB-45.(none)>
+Date:   Thu Mar 6 17:20:32 2014 +0800
+
+    Update Code: 1. Update current stable code.
+
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index f7a8531..40136a5 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -432,9 +432,10 @@ struct sk_buff {
+ 	sk_buff_data_t		tail;
+ 	sk_buff_data_t		end;
+ 	unsigned char		*head,
+-				*data;
++				*data,
++				*data_cache;
+ 	unsigned int		truesize;
+-	unsigned int		pool_id;
++	int			pool_id;
+ 	atomic_t		users;
+ };
+ 
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index 8160ed4..98e939d 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -70,6 +70,8 @@
+ 
+ #include "kmap_skb.h"
+ 
++#define DPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d][PID-%d] %s:%d\t" msg, smp_processor_id(), current->pid, __FUNCTION__, __LINE__, ## args);
++
+ static struct kmem_cache *skbuff_head_cache __read_mostly;
+ static struct kmem_cache *skbuff_fclone_cache __read_mostly;
+ 
+@@ -170,8 +172,8 @@ EXPORT_SYMBOL(skb_under_panic);
+  *	%GFP_ATOMIC.
+  */
+ 
+-int enable_skb_pool = 0;
+-struct skb_pool __percpu *skb_pools;
++volatile int enable_skb_pool = 0;
++struct skb_pool __percpu *skb_pools = NULL;
+ EXPORT_SYMBOL(enable_skb_pool);
+ EXPORT_SYMBOL(skb_pools);
+ 
+@@ -187,26 +189,37 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 
+ 	cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
+ 
+-	if (!fclone && enable_skb_pool && 
++	if (in_softirq() && !fclone && enable_skb_pool && skb_pools &&
+ 			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
+ 		struct skb_pool *skb_pool;
+ 
+ 		skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
+-		skb = __skb_dequeue(&skb_pool->free_list);
+-		if (!skb)
++		skb = skb_dequeue(&skb_pool->free_list);
++		if (skb)
++			DPRINTK("Allocate skb[%d] 0x%p from %d free list\n", 
++					skb->pool_id, skb, smp_processor_id());
++		if (!skb) {
+ 			skb = skb_dequeue(&skb_pool->recyc_list);
++			if (skb)
++				DPRINTK("Allocate skb[%d] 0x%p from %d recycle list\n", 
++						skb->pool_id, skb, smp_processor_id());
++		}
+ 		if (skb) {
+-			data = skb->data;
++			data = skb->data_cache;
++			skb->pool_id = smp_processor_id();
+ 			goto init;
+-		}
++		} else 
++			DPRINTK("Allocate skb failed from %d pool list\n", 
++					smp_processor_id());
+ 	}
+ 
+ 	/* Get the HEAD */
+ 	skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
+ 	if (!skb)
+ 		goto out;
++	DPRINTK("Allocate regular skb[%d] 0x%p\n", skb->pool_id, skb);
+ 
+-	/* Mark it's a skb from pool */
++	/* Mark it is a skb from regular cache */
+ 	skb->pool_id = -1;
+ 
+ 	//size = SKB_DATA_ALIGN(size);
+@@ -217,6 +230,8 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 
+ init:
+ 
++	DPRINTK("Initialize skb[%d] %p\n", skb->pool_id, skb);
++
+ 	/*
+ 	 * Only clear those fields we need to clear, not those that we will
+ 	 * actually initialise below. Hence, don't put any more fields after
+@@ -389,7 +404,7 @@ static void skb_release_data(struct sk_buff *skb)
+ 		if (skb_has_frags(skb))
+ 			skb_drop_fraglist(skb);
+ 
+-		if (skb->pool_id > 0)
++		if (skb->pool_id >= 0)
+ 			return;
+ 
+ 		kfree(skb->head);
+@@ -404,17 +419,32 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 	struct sk_buff *other;
+ 	atomic_t *fclone_ref;
+ 
++	barrier();
++
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+-		if (skb->pool_id) {
+-			struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
+-
+-			if (skb->pool_id == smp_processor_id())
+-				__skb_queue_head(&skb_pool->free_list, skb);
+-			else
++		if (enable_skb_pool && skb_pools && skb->pool_id >= 0) {
++			struct skb_pool *skb_pool;
++			
++			DPRINTK("Free skb[%d] 0x%p on CPU %d\n", 
++					skb->pool_id, skb, smp_processor_id())
++
++		       	skb_pool = per_cpu_ptr(skb_pools, skb->pool_id);
++
++			if (skb->pool_id == smp_processor_id()) {
++				skb_queue_head(&skb_pool->free_list, skb);
++				DPRINTK("Put skb[%d] 0x%p into %d free list\n", 
++						skb->pool_id, skb, skb->pool_id);
++			}
++			else {
+ 				skb_queue_head(&skb_pool->recyc_list, skb);
+-		} else 
++				DPRINTK("Put skb[%d] 0x%p into %d recycle list\n", 
++						skb->pool_id, skb, skb->pool_id);
++			}
++		} else {
++			DPRINTK("Free regular skb[%d] 0x%p\n", skb->pool_id, skb);
+ 			kmem_cache_free(skbuff_head_cache, skb);
++		}
+ 		break;
+ 
+ 	case SKB_FCLONE_ORIG:
+@@ -498,6 +528,8 @@ void kfree_skb(struct sk_buff *skb)
+ {
+ 	if (unlikely(!skb))
+ 		return;
++	DPRINTK("Try to free skb[%d] 0x%p[%d]\n", skb->pool_id, skb, atomic_read(&skb->users));
++
+ 	if (likely(atomic_read(&skb->users) == 1))
+ 		smp_rmb();
+ 	else if (likely(!atomic_dec_and_test(&skb->users)))
+diff --git a/module/fastsocket.c b/module/fastsocket.c
+index 1cd62b1..857f97a 100644
+--- a/module/fastsocket.c
++++ b/module/fastsocket.c
+@@ -31,7 +31,7 @@
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Xiaofeng Lin <sina.com.cn>");
+-MODULE_VERSION("1.0.0");
++MODULE_VERSION("1.0.0.SP");
+ MODULE_DESCRIPTION("Fastsocket which provides scalable and thus high kernel performance for socket application");
+ 
+ static int enable_fastsocket_debug = 3;
+@@ -39,18 +39,19 @@ static int enable_listen_spawn = 2;
+ extern int enable_receive_flow_deliver;
+ static int enable_fast_epoll = 1;
+ extern int enable_skb_pool;
++static int enable_fastsocket_skb_pool;
+ 
+ module_param(enable_fastsocket_debug,int, 0);
+ module_param(enable_listen_spawn, int, 0);
+ module_param(enable_receive_flow_deliver, int, 0);
+ module_param(enable_fast_epoll, int, 0);
+-module_param(enable_skb_pool, int, 0);
++module_param(enable_fastsocket_skb_pool, int, 0);
+ 
+ MODULE_PARM_DESC(enable_fastsocket_debug, " Debug level [Default: 3]" );
+ MODULE_PARM_DESC(enable_listen_spawn, " Control Listen-Spawn: 0 = Disbale, 1 = Process affinity required, 2 = Autoset process affinity[Default]");
+ MODULE_PARM_DESC(enable_receive_flow_deliver, " Control Receive-Flow-Deliver: 0 = Disbale[Default], 1 = Enabled");
+ MODULE_PARM_DESC(enable_fast_epoll, " Control Fast-Epoll: 0 = Disbale, 1 = Enabled[Default]");
+-MODULE_PARM_DESC(enable_skb_pool, " Control Skb-Pool: 0 = Disbale[Default], 1 = Enabled[Default]");
++MODULE_PARM_DESC(enable_fastsocket_skb_pool, " Control Skb-Pool: 0 = Disbale[Default], 1 = Enabled[Default]");
+ 
+ int inline fsocket_get_dbg_level(void)
+ {
+@@ -1535,7 +1536,7 @@ static int fastsocket_skb_init(void)
+ 
+ 	printk(KERN_INFO "Size: head-%ld, sinfo-%ld\n", sizeof(struct sk_buff), sizeof(struct skb_shared_info));
+ 
+-	if (!enable_skb_pool)
++	if (!enable_fastsocket_skb_pool)
+ 		return ret;
+ 
+ 	printk(KERN_INFO "Fastsocket skb pool is enabled\n");
+@@ -1565,16 +1566,20 @@ static int fastsocket_skb_init(void)
+ 			if (!skb)
+ 				//FIXME: Need more carefull release.
+ 				return -ENOMEM;
+-			skb->data = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
++			skb->data_cache = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
+ 					GFP_KERNEL, cpu_to_node(cpu));
+-			if (!skb->data)
++			if (!skb->data_cache)
+ 				//FIXME: Need more carefull release.
+ 				return -ENOMEM;
+ 			skb->pool_id = cpu;
+-			__skb_queue_head(&skb_pool->free_list, skb);
++			skb_queue_head(&skb_pool->free_list, skb);
+ 		}
+ 	}
+ 
++	enable_skb_pool = 1;
++
++	barrier();
++
+ 	return ret;
+ }
+ 
+@@ -1628,7 +1633,7 @@ static int __init  fastsocket_init(void)
+ 		printk(KERN_INFO "Fastsocket: Enable Recieve Flow Deliver\n");
+ 	if (enable_fast_epoll)
+ 		printk(KERN_INFO "Fastsocket: Enable Fast Epoll\n");
+-	if (enable_skb_pool)
++	if (enable_fastsocket_skb_pool)
+ 		printk(KERN_INFO "Fastsocket: Enable Skb Pool\n");
+ 
+ 	return ret;
+
+commit 74fbb130c380e2f753b8d0ccaf77f8efa3f777a2
+Author: Breezewoods <jerrylin.lxf@gmail.com>
+Date:   Mon Mar 3 18:22:54 2014 +0800
+
+    Add Code: 1. Add code for receive side skb pool.
+
+diff --git a/kernel/include/linux/if_packet.h b/kernel/include/linux/if_packet.h
+index 609fcf5..0df2d89 100644
+--- a/kernel/include/linux/if_packet.h
++++ b/kernel/include/linux/if_packet.h
+@@ -31,6 +31,7 @@ struct sockaddr_ll
+ /* These ones are invisible by user level */
+ #define PACKET_LOOPBACK		5		/* MC/BRD frame looped back */
+ #define PACKET_FASTROUTE	6		/* Fastrouted frame	*/
++#define PACKET_FASTSOCKET	7		/* Fastsocket pool frame */
+ 
+ /* Packet socket options */
+ 
+diff --git a/kernel/include/linux/skbuff.h b/kernel/include/linux/skbuff.h
+index 17a87cd..f7a8531 100644
+--- a/kernel/include/linux/skbuff.h
++++ b/kernel/include/linux/skbuff.h
+@@ -225,6 +225,11 @@ struct skb_shared_info {
+ 	void *		destructor_arg;
+ };
+ 
++struct skb_pool {
++	struct sk_buff_head free_list;
++	struct sk_buff_head recyc_list;
++};
++
+ /* We divide dataref into two halves.  The higher 16 bits hold references
+  * to the payload part of skb->data.  The lower 16 bits hold references to
+  * the entire skb->data.  A clone of a headerless skb holds the length of
+@@ -429,9 +434,14 @@ struct sk_buff {
+ 	unsigned char		*head,
+ 				*data;
+ 	unsigned int		truesize;
++	unsigned int		pool_id;
+ 	atomic_t		users;
+ };
+ 
++#define MAX_FASTSOCKET_SKB_RAW_SIZE     ( 2048 )
++#define MAX_FASTSOCKET_SKB_DATA_SIZE    ( 2048 - sizeof(struct skb_shared_info) )
++#define MAX_FASTSOCKET_POOL_SKB_NUM     ( 10 )
++
+ #ifdef __KERNEL__
+ /*
+  *	Handling routines are only of interest to the kernel
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index dc4a95c..8160ed4 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -169,6 +169,12 @@ EXPORT_SYMBOL(skb_under_panic);
+  *	Buffers may only be allocated from interrupts using a @gfp_mask of
+  *	%GFP_ATOMIC.
+  */
++
++int enable_skb_pool = 0;
++struct skb_pool __percpu *skb_pools;
++EXPORT_SYMBOL(enable_skb_pool);
++EXPORT_SYMBOL(skb_pools);
++
+ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 			    int fclone, int node)
+ {
+@@ -177,19 +183,40 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+ 	struct sk_buff *skb;
+ 	u8 *data;
+ 
++	size = SKB_DATA_ALIGN(size);
++
+ 	cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
+ 
++	if (!fclone && enable_skb_pool && 
++			size < MAX_FASTSOCKET_SKB_DATA_SIZE) {
++		struct skb_pool *skb_pool;
++
++		skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
++		skb = __skb_dequeue(&skb_pool->free_list);
++		if (!skb)
++			skb = skb_dequeue(&skb_pool->recyc_list);
++		if (skb) {
++			data = skb->data;
++			goto init;
++		}
++	}
++
+ 	/* Get the HEAD */
+ 	skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
+ 	if (!skb)
+ 		goto out;
+ 
+-	size = SKB_DATA_ALIGN(size);
++	/* Mark it's a skb from pool */
++	skb->pool_id = -1;
++
++	//size = SKB_DATA_ALIGN(size);
+ 	data = kmalloc_node_track_caller(size + sizeof(struct skb_shared_info),
+ 			gfp_mask, node);
+ 	if (!data)
+ 		goto nodata;
+ 
++init:
++
+ 	/*
+ 	 * Only clear those fields we need to clear, not those that we will
+ 	 * actually initialise below. Hence, don't put any more fields after
+@@ -362,6 +389,9 @@ static void skb_release_data(struct sk_buff *skb)
+ 		if (skb_has_frags(skb))
+ 			skb_drop_fraglist(skb);
+ 
++		if (skb->pool_id > 0)
++			return;
++
+ 		kfree(skb->head);
+ 	}
+ }
+@@ -376,7 +406,15 @@ static void kfree_skbmem(struct sk_buff *skb)
+ 
+ 	switch (skb->fclone) {
+ 	case SKB_FCLONE_UNAVAILABLE:
+-		kmem_cache_free(skbuff_head_cache, skb);
++		if (skb->pool_id) {
++			struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, smp_processor_id());
++
++			if (skb->pool_id == smp_processor_id())
++				__skb_queue_head(&skb_pool->free_list, skb);
++			else
++				skb_queue_head(&skb_pool->recyc_list, skb);
++		} else 
++			kmem_cache_free(skbuff_head_cache, skb);
+ 		break;
+ 
+ 	case SKB_FCLONE_ORIG:
+diff --git a/library/libsocket.c b/library/libsocket.c
+index e96422a..dbcfc0d 100644
+--- a/library/libsocket.c
++++ b/library/libsocket.c
+@@ -7,6 +7,7 @@
+ #include <unistd.h>
+ #include <string.h>
+ #include <linux/eventpoll.h>
++#include <fcntl.h>
+ 
+ #define __USE_GNU
+ #include <sched.h>
+diff --git a/module/fastsocket.c b/module/fastsocket.c
+index 5555304..1cd62b1 100644
+--- a/module/fastsocket.c
++++ b/module/fastsocket.c
+@@ -38,16 +38,19 @@ static int enable_fastsocket_debug = 3;
+ static int enable_listen_spawn = 2;
+ extern int enable_receive_flow_deliver;
+ static int enable_fast_epoll = 1;
++extern int enable_skb_pool;
+ 
+ module_param(enable_fastsocket_debug,int, 0);
+ module_param(enable_listen_spawn, int, 0);
+ module_param(enable_receive_flow_deliver, int, 0);
+ module_param(enable_fast_epoll, int, 0);
++module_param(enable_skb_pool, int, 0);
+ 
+ MODULE_PARM_DESC(enable_fastsocket_debug, " Debug level [Default: 3]" );
+ MODULE_PARM_DESC(enable_listen_spawn, " Control Listen-Spawn: 0 = Disbale, 1 = Process affinity required, 2 = Autoset process affinity[Default]");
+ MODULE_PARM_DESC(enable_receive_flow_deliver, " Control Receive-Flow-Deliver: 0 = Disbale[Default], 1 = Enabled");
+ MODULE_PARM_DESC(enable_fast_epoll, " Control Fast-Epoll: 0 = Disbale, 1 = Enabled[Default]");
++MODULE_PARM_DESC(enable_skb_pool, " Control Skb-Pool: 0 = Disbale[Default], 1 = Enabled[Default]");
+ 
+ int inline fsocket_get_dbg_level(void)
+ {
+@@ -1519,6 +1522,62 @@ static void init_once(void *foo)
+ 	inode_init_once(&ei->vfs_inode);
+ }
+ 
++static struct kmem_cache *skb_head __read_mostly;
++extern struct skb_pool __percpu *skb_pools;
++
++//#define MAX_FASTSOCKET_SKB_RAW_SIZE	( 2048 )
++//#define MAX_FASTSOCKET_SKB_DATA_SIZE	( 2048 - sizeof(struct skb_shared_info) )
++//#define MAX_FASTSOCKET_POOL_SKB_NUM	( 10 )
++
++static int fastsocket_skb_init(void)
++{	
++	int cpu, ret = 0;
++
++	printk(KERN_INFO "Size: head-%ld, sinfo-%ld\n", sizeof(struct sk_buff), sizeof(struct skb_shared_info));
++
++	if (!enable_skb_pool)
++		return ret;
++
++	printk(KERN_INFO "Fastsocket skb pool is enabled\n");
++
++	skb_head = kmem_cache_create("fastsocket_skb_cache", sizeof(struct sk_buff), 
++			0, 
++			SLAB_HWCACHE_ALIGN | SLAB_PANIC, 
++			NULL);
++
++	skb_pools = alloc_percpu(struct skb_pool);
++	if (!skb_pools) {
++		EPRINTK_LIMIT(ERR, "Allocate skb pool table failed\n");
++		return -ENOMEM;
++	}
++
++	for_each_online_cpu(cpu) {
++		int i;
++		struct skb_pool *skb_pool = per_cpu_ptr(skb_pools, cpu);
++		struct sk_buff *skb;
++
++		skb_queue_head_init(&skb_pool->free_list);
++		skb_queue_head_init(&skb_pool->recyc_list);
++
++		for (i = 0; i < MAX_FASTSOCKET_POOL_SKB_NUM; i++) {
++			//FIXME: GFP_FLAG may take some considieration.
++			skb = kmem_cache_alloc_node(skb_head, GFP_KERNEL, cpu_to_node(cpu));
++			if (!skb)
++				//FIXME: Need more carefull release.
++				return -ENOMEM;
++			skb->data = kmalloc_node(MAX_FASTSOCKET_SKB_RAW_SIZE, 
++					GFP_KERNEL, cpu_to_node(cpu));
++			if (!skb->data)
++				//FIXME: Need more carefull release.
++				return -ENOMEM;
++			skb->pool_id = cpu;
++			__skb_queue_head(&skb_pool->free_list, skb);
++		}
++	}
++
++	return ret;
++}
++
+ static int __init  fastsocket_init(void)
+ {
+ 	int ret = 0;
+@@ -1527,6 +1586,12 @@ static int __init  fastsocket_init(void)
+ 			num_online_cpus(), num_possible_cpus(),
+ 			num_present_cpus(), num_active_cpus());
+ 
++	ret = fastsocket_skb_init();
++	if (ret < 0) {
++		EPRINTK_LIMIT(ERR, "Initialize fastsocket skb failded\n");
++		return ret;
++	}
++
+ 	ret = misc_register(&fastsocket_dev);
+ 	if (ret < 0) {
+ 		EPRINTK_LIMIT(ERR, "Register fastsocket channel device failed\n");
+@@ -1563,6 +1628,8 @@ static int __init  fastsocket_init(void)
+ 		printk(KERN_INFO "Fastsocket: Enable Recieve Flow Deliver\n");
+ 	if (enable_fast_epoll)
+ 		printk(KERN_INFO "Fastsocket: Enable Fast Epoll\n");
++	if (enable_skb_pool)
++		printk(KERN_INFO "Fastsocket: Enable Skb Pool\n");
+ 
+ 	return ret;
+ }
+@@ -1582,6 +1649,10 @@ static void __exit fastsocket_exit(void)
+ 		enable_receive_flow_deliver = 0;
+ 		printk(KERN_INFO "Fastsocket: Disable Recieve Flow Deliver\n");
+ 	}
++	if (enable_skb_pool) {
++		enable_skb_pool = 0;
++		printk(KERN_INFO "Fastsocket: Disable Skb Pool\n");
++	}
+ 
+ 
+ 	printk(KERN_INFO "Fastsocket: Remove Module\n");
+diff --git a/module/fastsocket.h b/module/fastsocket.h
+index a0a3ad5..7236007 100644
+--- a/module/fastsocket.h
++++ b/module/fastsocket.h
+@@ -57,6 +57,12 @@ struct fsocket_alloc {
+ 	struct inode vfs_inode;
+ };
+ 
++
++//struct skb_pool {
++//	struct sk_buff_head free_list;
++//	struct sk_buff_head recyc_list;
++//};
++
+ static inline struct inode *SOCKET_INODE(struct socket *socket)
+ {
+ 	return &container_of(socket, struct fsocket_alloc, socket)->vfs_inode;
