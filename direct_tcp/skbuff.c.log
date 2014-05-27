@@ -1,0 +1,13 @@
+diff --git a/kernel/net/core/skbuff.c b/kernel/net/core/skbuff.c
+index dc4a95c..6fb9aaf 100644
+--- a/kernel/net/core/skbuff.c
++++ b/kernel/net/core/skbuff.c
+@@ -547,6 +547,8 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
+ 	new->network_header	= old->network_header;
+ 	new->mac_header		= old->mac_header;
+ 	skb_dst_set(new, dst_clone(skb_dst(old)));
++	new->sock_dst		= old->sock_dst;
++	new->peek_sk		= old->peek_sk;
+ 	new->rxhash		= old->rxhash;
+ #ifdef CONFIG_XFRM
+ 	new->sp			= secpath_get(old->sp);

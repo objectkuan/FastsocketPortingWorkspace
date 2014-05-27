@@ -1,0 +1,45 @@
+diff --git a/kernel/include/net/sock.h b/kernel/include/net/sock.h
+index a20ca0e..fe1fdf4 100644
+--- a/kernel/include/net/sock.h
++++ b/kernel/include/net/sock.h
+@@ -245,6 +245,7 @@ struct sock {
+ 	} sk_backlog;
+ 	wait_queue_head_t	*sk_sleep;
+ 	struct dst_entry	*sk_dst_cache;
++	struct dst_entry	*sk_rcv_dst;
+ #ifdef CONFIG_XFRM
+ 	struct xfrm_policy	*sk_policy[2];
+ #endif
+@@ -554,6 +555,7 @@ enum sock_flags {
+ 	SOCK_TIMESTAMPING_SYS_HARDWARE, /* %SOF_TIMESTAMPING_SYS_HARDWARE */
+ 	SOCK_RXQ_OVFL,
+ 	SOCK_ZEROCOPY, /* buffers from userspace */
++	SOCK_DIRECT_TCP, /* bypass ip layer when receive skb */
+ };
+ 
+ static inline void sock_copy_flags(struct sock *nsk, struct sock *osk)
+@@ -1193,6 +1195,8 @@ static inline void sock_put(struct sock *sk)
+ {
+ 	if (atomic_dec_and_test(&sk->sk_refcnt))
+ 		sk_free(sk);
++
++	FPRINTK("Release socket 0x%p[%u]\n", sk, atomic_read(&sk->sk_refcnt));
+ }
+ 
+ extern int sk_receive_skb(struct sock *sk, struct sk_buff *skb,
+@@ -1690,9 +1694,14 @@ static inline void sk_change_net(struct sock *sk, struct net *net)
+ 
+ static inline struct sock *skb_steal_sock(struct sk_buff *skb)
+ {
++	if (skb->peek_sk) {
++		FPRINTK("Skb 0x%p has set socket 0x%p\n", skb, skb->peek_sk);
++		return skb->peek_sk;
++	}
++
+ 	if (unlikely(skb->sk)) {
+ 		struct sock *sk = skb->sk;
+-
++			
+ 		skb->destructor = NULL;
+ 		skb->sk = NULL;
+ 		return sk;
