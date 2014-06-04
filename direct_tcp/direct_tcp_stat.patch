@@ -1,0 +1,319 @@
+diff --git a/include/net/inet_hashtables.h b/include/net/inet_hashtables.h
+index a66d41a..eaf4cab 100644
+--- a/include/net/inet_hashtables.h
++++ b/include/net/inet_hashtables.h
+@@ -39,18 +39,19 @@
+ 
+ struct inet_hash_stats
+ {
+-	unsigned long	common_accept;
++	unsigned long	local_listen_lookup;
+ 	unsigned long	local_accept;
+-	unsigned long	global_accept;
+-	unsigned long	common_accept_failed;
+ 	unsigned long	local_accept_failed;
+-	unsigned long	global_accept_failed;
+-	unsigned long	common_accept_again;
+ 	unsigned long	local_accept_again;
+-	unsigned long	global_accept_again;
+ 
+-	unsigned long	local_listen_lookup;
+ 	unsigned long 	global_listen_lookup;
++	unsigned long	global_accept;
++	unsigned long	global_accept_failed;
++	unsigned long	global_accept_again;
++
++	unsigned long	common_accept;
++	unsigned long	common_accept_failed;
++	unsigned long	common_accept_again;
+ 
+ 	unsigned 	local_listen_hash;
+ 	unsigned	local_listen_unhash;
+diff --git a/include/net/route.h b/include/net/route.h
+index f494b24..678d5bc 100644
+--- a/include/net/route.h
++++ b/include/net/route.h
+@@ -77,6 +77,12 @@ struct rtable
+ 	struct inet_peer	*peer; /* long-living peer info */
+ };
+ 
++struct direct_tcp_stat
++{
++	unsigned long input_route_fast;
++	unsigned long input_route_slow;
++};
++
+ struct ip_rt_acct
+ {
+ 	__u32 	o_bytes;
+diff --git a/include/net/sock.h b/include/net/sock.h
+index 7dd5884..3161123 100644
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -1693,11 +1693,26 @@ static inline void sk_change_net(struct sock *sk, struct net *net)
+ 	sock_net_set(sk, hold_net(net));
+ }
+ 
++struct sock_lookup_stat
++{
++	unsigned long lookup_fast;
++	unsigned long lookup_slow;
++};
++
++extern struct sock_lookup_stat *sock_lookup_stats;
++
+ static inline struct sock *skb_steal_sock(struct sk_buff *skb)
+ {
++	struct sock_lookup_stat *stat;
++
++	stat = per_cpu_ptr(sock_lookup_stats, smp_processor_id());
++
+ 	if (skb->peek_sk) {
++		stat->lookup_fast++;
+ 		FPRINTK("Skb 0x%p has set socket 0x%p\n", skb, skb->peek_sk);
+ 		return skb->peek_sk;
++	} else {
++		stat->lookup_slow++;
+ 	}
+ 
+ 	if (unlikely(skb->sk)) {
+diff --git a/net/core/sock.c b/net/core/sock.c
+index b17f8e3..7134d8e 100644
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -2466,17 +2466,95 @@ static const struct file_operations proto_seq_fops = {
+ 	.release	= seq_release_net,
+ };
+ 
++static volatile unsigned cpu_id;
++struct sock_lookup_stat __percpu *sock_lookup_stats;
++EXPORT_SYMBOL(sock_lookup_stats);
++
++static struct sock_lookup_stat *get_online(loff_t *pos)
++{
++	struct sock_lookup_stat *rc = NULL;
++
++	while (*pos < nr_cpu_ids)
++		if (cpu_online(*pos)) {
++			rc = per_cpu_ptr(sock_lookup_stats, *pos);
++			break;
++		} else
++			++*pos;
++	cpu_id = *pos;
++
++	return rc;
++}
++
++static void *sock_lookup_seq_next(struct seq_file *seq, void *v, loff_t *pos)
++{
++	++*pos;
++	return get_online(pos);
++}
++
++static void sock_lookup_seq_stop(struct seq_file *seq, void *v)
++{
++
++}
++
++static void *sock_lookup_seq_start(struct seq_file *seq, loff_t *pos)
++{
++	seq_printf(seq, "%s\t%-15s%-15s\n",
++		"CPU", "Fast_lookup", "Slow_lookup");
++
++	cpu_id = 0;
++
++	return get_online(pos);
++}
++
++static int sock_lookup_seq_show(struct seq_file *seq, void *v)
++{
++	struct sock_lookup_stat *s = v;
++
++	seq_printf(seq, "%u\t%-15lu%-15lu\n",
++		cpu_id, s->lookup_fast, s->lookup_slow);
++
++	return 0;
++}
++
++static const struct seq_operations sock_lookup_seq_ops = {
++	.start  = sock_lookup_seq_start,
++	.next   = sock_lookup_seq_next,
++	.stop   = sock_lookup_seq_stop,
++	.show   = sock_lookup_seq_show,
++};
++
++static int sock_lookup_seq_open(struct inode *inode, struct file *file)
++{
++	return seq_open_net(inode, file, &sock_lookup_seq_ops,
++			    sizeof(struct seq_net_private));
++}
++
++static const struct file_operations sock_lookup_seq_fops = {
++	.owner		= THIS_MODULE,
++	.open		= sock_lookup_seq_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= seq_release_net,
++};
++
+ static __net_init int proto_init_net(struct net *net)
+ {
+ 	if (!proc_net_fops_create(net, "protocols", S_IRUGO, &proto_seq_fops))
+ 		return -ENOMEM;
+ 
++	if (!proc_net_fops_create(net, "sock_lookup", S_IRUGO, &sock_lookup_seq_fops))
++		return -ENOMEM;
++	sock_lookup_stats = alloc_percpu(struct sock_lookup_stat);
++	if (!sock_lookup_stats)
++		return -ENOMEM;
++
+ 	return 0;
+ }
+ 
+ static __net_exit void proto_exit_net(struct net *net)
+ {
+ 	proc_net_remove(net, "protocols");
++	proc_net_remove(net, "sock_lookup");
+ }
+ 
+ 
+diff --git a/net/ipv4/ip_input.c b/net/ipv4/ip_input.c
+index 393dbee..05f8a74 100644
+--- a/net/ipv4/ip_input.c
++++ b/net/ipv4/ip_input.c
+@@ -322,18 +322,25 @@ drop:
+ 	return -1;
+ }
+ 
++extern struct direct_tcp_stat *direct_tcp_stats;
++
+ static int ip_rcv_finish(struct sk_buff *skb)
+ {
+ 	const struct iphdr *iph = ip_hdr(skb);
+ 	struct rtable *rt;
++	struct direct_tcp_stat *stat;
++
++	stat = per_cpu_ptr(direct_tcp_stats, smp_processor_id());
+ 
+ 	/*
+ 	 *	Initialise the virtual path cache for the packet. It describes
+ 	 *	how the packet travels inside Linux networking.
+ 	 */
++
+ 	if (skb_dst(skb) == NULL) {
+ 		int err = ip_route_input(skb, iph->daddr, iph->saddr, iph->tos,
+ 					 skb->dev);
++		stat->input_route_slow++;
+ 		FPRINTK("Skb 0x%p needs to go through route lookup\n", skb);
+ 
+ 		if (unlikely(err)) {
+@@ -346,6 +353,7 @@ static int ip_rcv_finish(struct sk_buff *skb)
+ 			goto drop;
+ 		}
+ 	} else {
++		stat->input_route_fast++;
+ 		FPRINTK("Skb 0x%p has set dst cache 0x%p[%u]\n", skb, skb_dst(skb), atomic_read(&skb_dst(skb)->__refcnt));
+ 	}
+ 
+diff --git a/net/ipv4/ip_output.c b/net/ipv4/ip_output.c
+index 1158d5a..5a10d2b 100644
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -1512,11 +1512,97 @@ void ip_send_reply(struct sock *sk, struct sk_buff *skb, struct ip_reply_arg *ar
+ 	ip_rt_put(rt);
+ }
+ 
++static volatile unsigned cpu_id;
++struct direct_tcp_stat __percpu *direct_tcp_stats;
++
++static struct direct_tcp_stat *direct_tcp_get_online(loff_t *pos)
++{
++	struct direct_tcp_stat *rc = NULL;
++
++	while (*pos < nr_cpu_ids)
++		if (cpu_online(*pos)) {
++			rc = per_cpu_ptr(direct_tcp_stats, *pos);
++			break;
++		} else
++			++*pos;
++	cpu_id = *pos;
++
++	return rc;
++}
++
++static void *direct_tcp_seq_next(struct seq_file *seq, void *v, loff_t *pos)
++{
++	++*pos;
++	return direct_tcp_get_online(pos);
++}
++
++static void direct_tcp_seq_stop(struct seq_file *seq, void *v)
++{
++
++}
++
++static void *direct_tcp_seq_start(struct seq_file *seq, loff_t *pos)
++{
++	seq_printf(seq, "%s\t%-15s%-15s\n",
++		"CPU", "Fast_route", "Slow_route");
++
++	cpu_id = 0;
++
++	return direct_tcp_get_online(pos);
++}
++
++static int direct_tcp_seq_show(struct seq_file *seq, void *v)
++{
++	struct direct_tcp_stat *s = v;
++
++	seq_printf(seq, "%u\t%-15lu%-15lu\n",
++		cpu_id, s->input_route_fast, s->input_route_slow);
++
++	return 0;
++}
++
++static const struct seq_operations direct_tcp_seq_ops = {
++	.start = direct_tcp_seq_start,
++	.next  = direct_tcp_seq_next,
++	.stop  = direct_tcp_seq_stop,
++	.show  = direct_tcp_seq_show,
++};
++
++static int direct_tcp_seq_open(struct inode *inode, struct file *file)
++{
++	return seq_open(file, &direct_tcp_seq_ops);
++}
++
++ssize_t direct_tcp_reset(struct file *file, const char __user *buf, size_t size, loff_t *ppos)
++{
++	int cpu;
++	struct direct_tcp_stat *stat;
++
++	for_each_online_cpu(cpu) {
++		stat = per_cpu_ptr(direct_tcp_stats, cpu);
++		stat->input_route_fast = 0;
++		stat->input_route_slow = 0;
++	}
++
++	return 1;
++}
++static const struct file_operations direct_tcp_fops = {
++	.owner	 = THIS_MODULE,
++	.open    = direct_tcp_seq_open,
++	.read    = seq_read,
++	.llseek  = seq_lseek,
++	.release = seq_release,
++	.write   = direct_tcp_reset,
++};
++
+ void __init ip_init(void)
+ {
+ 	ip_rt_init();
+ 	inet_initpeers();
+ 
++	direct_tcp_stats = alloc_percpu(struct direct_tcp_stat);
++	proc_net_fops_create(&init_net, "direct_tcp", S_IRUGO, &direct_tcp_fops);
++
+ #if defined(CONFIG_IP_MULTICAST) && defined(CONFIG_PROC_FS)
+ 	igmp_mc_proc_init();
+ #endif

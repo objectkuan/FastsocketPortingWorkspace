@@ -1,0 +1,39 @@
+diff --git a/kernel/include/net/dst.h b/kernel/include/net/dst.h
+index 5a900dd..09c2ad0 100644
+--- a/kernel/include/net/dst.h
++++ b/kernel/include/net/dst.h
+@@ -16,6 +16,7 @@
+ #include <net/neighbour.h>
+ #include <asm/processor.h>
+ 
+ /*
+  * 0 - no debugging messages
+  * 1 - rare events and bugs (default)
+@@ -156,6 +157,10 @@ static inline void dst_hold(struct dst_entry * dst)
+ 	 */
+ 	BUILD_BUG_ON(offsetof(struct dst_entry, __refcnt) & 63);
+ 	atomic_inc(&dst->__refcnt);
+ }
+ 
+ static inline void dst_use(struct dst_entry *dst, unsigned long time)
+@@ -168,16 +173,28 @@ static inline void dst_use(struct dst_entry *dst, unsigned long time)
+ static inline
+ struct dst_entry * dst_clone(struct dst_entry * dst)
+ {
+-	if (dst)
++	if (dst) {
+ 		atomic_inc(&dst->__refcnt);
++	}
+ 	return dst;
+ }
+ 
+ extern void dst_release(struct dst_entry *dst);
+ static inline void skb_dst_drop(struct sk_buff *skb)
+ {
+-	if (skb->_skb_dst)
++	if (!skb->sock_dst && skb->_skb_dst) {
+ 		dst_release(skb_dst(skb));
++	}
+ 	skb->_skb_dst = 0UL;
+ }
+ 

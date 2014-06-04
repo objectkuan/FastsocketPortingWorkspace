@@ -41,9 +41,6 @@ index 6dc014a..e5e8955 100644
 +			struct tcphdr *th = (struct tcphdr *)(skb->data + (iphl * 4));
 +			struct sock *sk;
 +
-+			//sk = __inet_lookup_established(&init_net, &tcp_hashinfo, 
-+			//		iph->saddr, th->source, iph->daddr, ntohs(th->dest), 
-+			//		skb->dev->ifindex);
 +			sk = __inet_lookup(&init_net, &tcp_hashinfo, iph->saddr, th->source, 
 +					iph->daddr, th->dest, skb->dev->ifindex);
 +			if (sk) {

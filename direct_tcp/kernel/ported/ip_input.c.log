@@ -6,8 +6,6 @@ index 6c98b43..393dbee 100644
  #include <linux/mroute.h>
  #include <linux/netlink.h>
  
-+//#define FPRINTK(msg, args...) printk(KERN_DEBUG "Fastsocket [CPU%d][PID-%d] %s:%d\t" msg, smp_processor_id(), current->pid, __FUNCTION__, __LINE__, ## args);
-+
  /*
   *	Process Router Attention IP option
   */

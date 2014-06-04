@@ -7,7 +7,6 @@ index 74c07f1..a66d41a 100644
  	const struct iphdr *iph = ip_hdr(skb);
  
 -	if (unlikely(sk = skb_steal_sock(skb)))
-+	//if (unlikely(sk = skb_steal_sock(skb)))
 +	if ((sk = skb_steal_sock(skb)))
  		return sk;
  	else
