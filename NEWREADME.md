@@ -1,7 +1,7 @@
  README for FASTSOCKET
 ========================================================================
 
-# INTRODUCTION #
+## INTRODUCTION ##
 
 Fastsocket is a new scalable TCP socket implementation, with two-side 
 connection locality principle and per-core data design, to align all 
@@ -9,7 +9,7 @@ stages of packet processing for any given connection onto the same core,
 to avoid lock contentions, and to keep generality.
 
 
-# INCLUDED DIRECTORIES #
+## INCLUDED DIRECTORIES ##
 
 * fastsocket - the fastsocket source code directory
 * fastsocket/kernel - the kernel source code customized for fastsocket
@@ -18,7 +18,7 @@ to avoid lock contentions, and to keep generality.
 * fastsocket/demo - the source code directory of a demo server
 
 
-# HARDWARE REQUISITE #
+## HARDWARE REQUISITE ##
 
 We recommend hosts with specific hardwares, to let fastsocket function 
 adequately. The most essential requisite is a 10 Gbe Controller.
@@ -28,7 +28,7 @@ Here is a list of supported NICs (Network Interface Controller):
 - Intel Corporation 82599EB 10-Gigabit SFI/SFP+ Network Connection (ixgbe, igb, bnx2)
 
 
-# INSTALLING FROM SOURCE #
+## INSTALLING FROM SOURCE ##
 
 Developers can easily get the source codes and build fastsocket as 
 prefered. To build and install fastsocket from source, please follow a
@@ -55,7 +55,7 @@ Reboot and enter the new kernel:
 	# reboot
 
 
-# INSTALL FROM RPM #
+## INSTALL FROM RPM ##
 
 For those who do not want to bother with the source codes, RPM releases
 are provided.
@@ -77,7 +77,7 @@ Reboot and enter the new kernel:
 	# reboot
 
 
-# MAKING THE USER LIBRARY #
+## MAKING THE USER LIBRARY ##
 
 The fastsocket user library enables applicaiton to run with the function 
 of fastsocket.
@@ -90,7 +90,7 @@ To compile the library, enter the library directory, and make:
 After that, a file named libsocket.so is created.
 
 
-# HOW TO USE #
+## HOW TO USE ##
 
 Boot into the kernel with fastsocket
 
@@ -132,5 +132,5 @@ Run the application with fastsocket enabled. For example, run ngnix
 	# LD_PRELOAD=./libsocket nginx
 
 
-# RUNNING DEMO #
+## RUNNING DEMO ##
 
