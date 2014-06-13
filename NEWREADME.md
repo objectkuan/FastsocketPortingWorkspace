@@ -159,6 +159,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host A**:
 
 > - Make sure the host is booted with the fastsocket kernel
+> - Load the module into kernel and complete configurations in [How To Use](NEWREADME.md#how-to-use).
 > - Run the work load, here with 12 tasks:
 >
 >	`# ./http_load.sh 12`
@@ -189,6 +190,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host A**:
 
 > - Make sure the host is booted with the fastsocket kernel
+> - Load the module into kernel and complete configurations in [How To Use](NEWREADME.md#how-to-use).
 > - Run the work load, here with 12 tasks:
 >
 >	`# ./http_load.sh 12`
@@ -196,7 +198,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host B**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations
+> - Load the module into kernel and complete configurations in [How To Use](NEWREADME.md#how-to-use).
 > - Make the demo server
 >
 >	`# cd demo && make`
@@ -209,7 +211,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host C**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations
+> - Load the module into kernel and complete configurations in [How To Use](NEWREADME.md#how-to-use).
 > - Make the demo server
 >
 >	`# cd demo && make`
