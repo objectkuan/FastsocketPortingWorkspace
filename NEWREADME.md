@@ -129,8 +129,40 @@ Set up IPs for the NIC, and bind each queue to one certain processor
 Run the application with fastsocket enabled. For example, run ngnix
    with fastsocket with:
  
-	# LD_PRELOAD=./libsocket nginx
+	# LD_PRELOAD=./libsocket.so nginx
 
 
 ## RUNNING DEMO ##
+
+The demo server can act as a naive server or a proxy server. The former
+needs two hosts and the latter three. For more details on the demo server 
+please refer to [Demo Server](http://github.com).
+
+### Naive Demo Mode ###
+
+In the naive demo mode, two hosts are needed:
+
+- Host A - a work load producer
+- Host B - a naive server
+
+To run the demo, here are the steps on each of two hosts.
+
+**Host A**:
+
+- Run the work load, here with 12 tasks:
+
+> `# ./http_load.sh 12`
+
+**Host B**:
+
+- Make sure the host is booted with the fastsocket kernel
+- Load the module into kernel and complete configurations in [How To Use](NEWREADME.md#how-to-use).
+- Make the demo server
+
+> `# cd demo && make`
+
+- Run the demo server with fastsocket
+
+> `# LD_PRELOAD=./libsocket.so ./server`
+
 
