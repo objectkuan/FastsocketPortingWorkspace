@@ -115,12 +115,11 @@ Configure the RSS queue, for example, if 12 queues are used:
 
 	# modprobe ixgbe InterruptThrottleRate=3000 RSS=12
 
-   NOTICE:
-       - in this case, the host should have at least 12 processors.
-       - to use more than 16 queues, more than one NIC is needed, and
-         the configuration command is:
-
-	# modprobe ixgbe InterruptThrottleRate=3000,3000 RSS=12,12
+> NOTICE:
+> - in this case, the host should have at least 12 processors.
+> - to use more than 16 queues, more than one NIC is needed, and the configuration command is:
+>
+>   `# modprobe ixgbe InterruptThrottleRate=3000,3000 RSS=12,12`
 
 Set up IPs for the NIC, and bind each queue to one certain processor
 
