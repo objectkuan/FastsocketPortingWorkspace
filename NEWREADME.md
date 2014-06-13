@@ -1,6 +1,16 @@
  README for FASTSOCKET
 ========================================================================
 
+## TABLE OF CONTENT ##
+* [Introduction](NEWREADME.md#introduction)
+* [Included directory](NEWREADME.md#included-directories)
+* [Hardware requisite](NEWREADME.md#hardware-requisite)
+* [Installing from source](NEWREADME.md#installing-from-source)
+* [Installing from RPM](NEWREADME.md#installing-from-rpm)
+* [Making the user library](NEWREADME.md#making-the-user-library)
+* [How to use](NEWREADME.md#how-to-use)
+* [Running demo](NEWREADME.md#running-demo)
+
 ## INTRODUCTION ##
 
 Fastsocket is a new scalable TCP socket implementation, with two-side 
@@ -55,7 +65,7 @@ Reboot and enter the new kernel:
 	# reboot
 
 
-## INSTALL FROM RPM ##
+## INSTALLING FROM RPM ##
 
 For those who do not want to bother with the source codes, RPM releases
 are provided.
@@ -115,12 +125,11 @@ Configure the RSS queue, for example, if 12 queues are used:
 
 	# modprobe ixgbe InterruptThrottleRate=3000 RSS=12
 
-   NOTICE:
-       - in this case, the host should have at least 12 processors.
-       - to use more than 16 queues, more than one NIC is needed, and
-         the configuration command is:
-
-	# modprobe ixgbe InterruptThrottleRate=3000,3000 RSS=12,12
+> NOTICE:
+> - in this case, the host should have at least 12 processors.
+> - to use more than 16 queues, more than one NIC is needed, and the configuration command is:
+>
+>   `# modprobe ixgbe InterruptThrottleRate=3000,3000 RSS=12,12`
 
 Set up IPs for the NIC, and bind each queue to one certain processor
 
