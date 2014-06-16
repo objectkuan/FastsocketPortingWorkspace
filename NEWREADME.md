@@ -111,7 +111,7 @@ Reboot and enter the new kernel:
 	[root@localhost kernel]# reboot
 
 
-### USER-LEVEl LIBRARY ###
+### USER-LEVEL LIBRARY ###
 
 The fastsocket user library enables applicaiton to run with the function
 of fastsocket.
@@ -206,7 +206,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host A**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [How To Use](#usage).
+> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Install and run the workload, e.g.
 >
 >	`[root@localhost ~]# ab -n 1000000 -c 100 http://10.0.0.2:80/`
@@ -220,7 +220,7 @@ To run the demo, here are the steps on each of two hosts.
 **Host B**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [How To Use](#usage).
+> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Make the demo server
 >
 >	`[root@localhost fastsocket]# cd demo && make`
@@ -259,7 +259,7 @@ To run the demo, here are the steps on each of three hosts.
 **Host A**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [How To Use](#usage).
+> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Run the work load, here with 12 tasks:
 >
 >	`[root@localhost ~]# ab -n 1000000 -c 100 http://10.0.0.2:96/`
@@ -272,7 +272,7 @@ To run the demo, here are the steps on each of three hosts.
 **Host B**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [How To Use](#usage).
+> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Make the demo server
 >
 >	`[root@localhost fastsocket]# cd demo && make`
@@ -285,7 +285,7 @@ To run the demo, here are the steps on each of three hosts.
 **Host C**:
 
 > - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [How To Use](#usage).
+> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Make the demo server
 >
 >	`[root@localhost fastsocket]# cd demo && make`
