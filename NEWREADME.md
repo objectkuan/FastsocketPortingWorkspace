@@ -10,6 +10,7 @@
 * [Making the user library](NEWREADME.md#making-the-user-library)
 * [How to use](NEWREADME.md#how-to-use)
 * [Running demo](NEWREADME.md#running-demo)
+* [Application Performance](NEWREADME.md#application-performance)
 
 ## INTRODUCTION ##
 
@@ -194,6 +195,7 @@ To run the demo, here are the steps on each of two hosts.
 > - Run the work load, here with 12 tasks:
 >
 >	`# ./http_load.sh 12`
+>
 
 **Host B**:
 
@@ -220,3 +222,31 @@ To run the demo, here are the steps on each of two hosts.
 >
 >	`# LD_PRELOAD=./libsocket.so ./server`
 >
+
+## Application Performance ##
+
+For Nginx, 
+
+- HTTP Keep-alive is disabled on Nginx for a short connection test.
+- Http load fetches a 64 bytes static file from Nginx with a concurrency of 500 multiplied by the number of cores.
+- We enable memory cache for that static file in order to rule out any disk affection.
+- Rewriting rules from real world applictions are added.
+- Accept mutex is disabled.
+
+Fastsocket on Linux 2.6.32 achieves 470K connection per second and 83% efficiency up to 24 cores, while performance of base 2.6.32 kernel increases non-linearly up to 12 cores and drops dramatically to 159K with 24 cores. The latest 3.13 kernel doubles the throughput to 283K when using 24 cores compared with 2.6.32. However, it has not completely solve the scalability bottlenecks, preventing performance from growing when more than 12 cores are used.
+
+
+For HAProxy,
+
+- RFD in Fastsocket is required.
+- A client runs http load with a concurrency of 500 multiplied by number of cores.
+- A back-end server responds each incoming HTTP request with a constant page.
+
+Fastsocket outperforms Linux 3.13 by 14K connection per second and base 2.6.32 by 37K when using 24 cores, though the one core throughputs are very close among all the three kernels.
+
+![Throughput](images/throughput.png "Throughput")
+
+Fastsocket is deployed on servers running HAProxy in Sina Weibo production system. Here's  the CPU utilization of two servers handling the same amount of requests, one is with Fastsocket and the other is not.
+
+![Online](images/online.png "Online")
+
