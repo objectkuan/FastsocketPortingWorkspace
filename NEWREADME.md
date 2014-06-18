@@ -3,13 +3,14 @@
 
 ## TABLE OF CONTENT ##
 * [Introduction](#introduction)
-* [Directory Layout](#directory-layout)
 * [Installation](#installation)
-  * [Requisites](NEWREADME.md#requisites)
+  * [Requisites](requisites)
+  * [Get the source](get-the-source)
   * [Kernel](#kernel)
     * [Install from RPM packages](#install-from-rpm-packages)
 	* [Install from source](#install-from-source)
   * [User-level library](#user-level-library)
+* [System Configuration](#system-configuration)
 * [Usage](#usage)
 * [Running demo](#running-demo)
   * [Simple Web Mode](#simple-web-mode)
@@ -30,39 +31,47 @@ HAProxy (measured by connections per second) by 65% and 46% on a 24-core
 machine, compared to Linux 3.13. Fastsocket has also been deployed to Sina
 production systems for balancing system loads and reducing CPU utilization.
 
-## DIRECTORY LAYOUT ##
-
-* kernel - the kernel source code customized for fastsocket, based on CentOS
-  2.6.32-431.17.1
-* library - the library to enable fastsocket in user space
-* scripts - configuration scripts
-* demo - source code of a demo server
-
 ## INSTALLATION ##
 
 ### REQUISITES ###
 
 10 Gbe controllers are recommended in order to enjoy the benefits of Fastsocket,
 though Fastsocket can also work on 1Gbe controllers.  Here is a list of
-supported NICs (Network Interface Controller):
+tested NICs (Network Interface Controller):
 
 - igb
   - Intel Corporation 82576 Gigabit Network Connection (rev 01)
+  - Intel Corporation I350 Gigabit Network Connection (rev 01)
 - ixgbe
   - Intel Corporation 82599ES 10-Gigabit SFI/SFP+ Network Connection (rev 01)
-  - Intel Corporation 82599EB 10-Gigabit SFI/SFP+ Network Connection
+  - Intel Corporation 82599EB 10-Gigabit SFI/SFP+ Network Connection (rev 01)
 - bnx2
-  - Broadcom Corporation NetXtreme II BCM5709 Gigabit Ethernet
+  - Broadcom Corporation NetXtreme II BCM5709 Gigabit Ethernet (rev 20)
 - tg3
+  - Broadcom Corporation NetXtreme BCM5720 Gigabit Ethernet PCIe
   - Broadcom Corporation NetXtreme BCM5761 Gigabit Ethernet PCIe (rev 10)
 
 All packages required can be installed by the following command:
 
-	[root@localhost ~]# yum install gcc make ncurses ncurses-devel perl python python-iniparse
+	[root@localhost ~]# yum install gcc make ncurses ncurses-devel perl ethtool iproute net-tools
 
-Ab is required on machines act as clients.
+Ab is required on machines act as clients:
 
 	[root@localhost ~]# yum install httpd-tools
+
+### GET THE SOURCE ###
+
+The source code is available at http://xxx.xxx.xxx. Clone the repository by:
+
+	[root@localhost ~]# git clone http://xxx.xxx.xxx fastsocket
+
+Here's a brief introduction to the directories in the repository.
+
+* kernel - the kernel source code customized for fastsocket, based on CentOS
+  2.6.32-431.17.1
+* library - the library to enable fastsocket in user space
+* scripts - configuration scripts
+* demo - source code of a demo server
 
 ### KERNEL ###
 
@@ -94,10 +103,6 @@ Developers can easily get the source codes and build fastsocket as
 prefered. To build and install fastsocket from source, please follow a
 few steps.
 
-Get the fastsocket-customized kernel source:
-
-	[root@localhost ~]# git clone http://xxx.xxx.xxx fastsocket
-
 Compile the kernel:
 
 	[root@localhost ~]# cd fastsocket/kernel
@@ -124,15 +129,12 @@ To compile the library, enter the library directory, and make:
 After that, a file named libsocket.so is created.
 
 
-## USAGE ##
+## SYSTEM CONFIGURATION ##
 
 Boot into the kernel with fastsocket and probe the fastsocket module into the
 kernel:
 
-	[root@localhost ~]# modprobe fastsocket \
-	> enable_listen_spawn=2 \
-	> enable_fast_epoll=1 \
-	> enable_receive_flow_deliver=1
+	[root@localhost ~]# modprobe fastsocket
 
 The above command goes with three options - enable_listen_spawn,
 enable_fast_epool, enable_receive_flow_deliver, which are the
@@ -146,25 +148,25 @@ and make sure you get a line like the following
 
     fastsocket             23145  0
 
-For 82599 NICs, the RSS queue should be properly configured. For example, if 12
-queues are used:
-
-	[root@localhost ~]# modprobe ixgbe InterruptThrottleRate=3000 RSS=12
-
-> NOTICE:
-> - in this case, the host should have at least 12 processors.
-> - to use more than 16 queues, more than one NIC is needed, and the configuration command is:
->
->	`# modprobe ixgbe InterruptThrottleRate=3000,3000 RSS=12,12`
-
 Set up IP addresses as you like, and bind each Tx/Rx queue to on a certain
 processor by running
 
 	[root@localhost ~]# cd fastsocket
-	[root@localhost fastsocket]# scripts/setup.sh -i eth0
+	[root@localhost fastsocket]# scripts/nic.sh -i eth0
 
 where *eth0* is the interface to be used and should be changed according to your
-system configuration (refer to *ifconfig* for details).
+system configuration (refer to *ifconfig* for details). The scripts will
+automatically check system and NIC parameters and configures various
+features. Please make sure you see the following line at the end of the output
+of the script:
+
+    Fastsocket has successfully configured eth0
+
+A higher limit of opened files per process is sometimes needed for stress testing:
+
+	[root@localhost fastsocket]# ulimit -n 65536
+
+## USAGE ##
 
 Fastsocket is enabled by preloading a shared library when launching an
 application. For example, ngnix can be started with Fastsocket by:
