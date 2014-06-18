@@ -13,6 +13,7 @@
 * [System Configuration](#system-configuration)
 * [Usage](#usage)
 * [Running demo](#running-demo)
+  * [Build Demo](#build-demo)
   * [Simple Web Mode](#simple-web-mode)
   * [Proxy Mode](#proxy-mode)
 * [Evaluation](#evaluation)
@@ -46,6 +47,7 @@ tested NICs (Network Interface Controller):
   - Intel Corporation 82599ES 10-Gigabit SFI/SFP+ Network Connection (rev 01)
   - Intel Corporation 82599EB 10-Gigabit SFI/SFP+ Network Connection (rev 01)
 - bnx2
+  - Broadcom Corporation NetXtreme II BCM5708 Gigabit Ethernet (rev 12)
   - Broadcom Corporation NetXtreme II BCM5709 Gigabit Ethernet (rev 20)
 - tg3
   - Broadcom Corporation NetXtreme BCM5720 Gigabit Ethernet PCIe
@@ -53,7 +55,7 @@ tested NICs (Network Interface Controller):
 
 All packages required can be installed by the following command:
 
-	[root@localhost ~]# yum install gcc make ncurses ncurses-devel perl ethtool iproute net-tools
+	[root@localhost ~]# yum install gcc make ncurses ncurses-devel perl ethtool iproute net-tools iptables
 
 Ab is required on machines act as clients:
 
@@ -67,11 +69,11 @@ The source code is available at http://xxx.xxx.xxx. Clone the repository by:
 
 Here's a brief introduction to the directories in the repository.
 
-* kernel - the kernel source code customized for fastsocket, based on CentOS
+* **kernel** - the kernel source code customized for fastsocket, based on CentOS
   2.6.32-431.17.1
-* library - the library to enable fastsocket in user space
-* scripts - configuration scripts
-* demo - source code of a demo server
+* **library** - the library to enable fastsocket in user space
+* **scripts** - configuration scripts
+* **demo** - source code of a demo server
 
 ### KERNEL ###
 
@@ -81,12 +83,12 @@ For those who do not want to bother with the source codes, RPM packages are
 provided for RHEL, CentOS and Fedora. Packages in deb format are not yet
 available.
 
-Download the RPM files:
+Download the files:
 
 	[root@localhost ~]# wget http://xxx.xxx.xxx/xxx.tgz
 	[root@localhost ~]# tar xf xxx.tgz
 
-Install from RPM file:
+Install the RPM packages:
 
 	[root@localhost ~]# rpm --force -ivh \
 	> kernel-2.6.32-431.17.1.el6.x86_64.rpm \
@@ -99,11 +101,9 @@ Reboot and enter the new kernel:
 
 #### INSTALL FROM SOURCE ####
 
-Developers can easily get the source codes and build fastsocket as
-prefered. To build and install fastsocket from source, please follow a
-few steps.
-
-Compile the kernel:
+Developers can easily get the source codes and build fastsocket as prefered. The
+following commands will build and install the kernel after Fastsocket repository
+is downloaded from git.
 
 	[root@localhost ~]# cd fastsocket/kernel
 	[root@localhost kernel]# make localmodconfig
@@ -111,34 +111,27 @@ Compile the kernel:
 	[root@localhost kernel]# make modules_install
 	[root@localhost kernel]# make install
 
-Reboot and enter the new kernel:
+Then you can reboot and enter the new kernel:
 
 	[root@localhost kernel]# reboot
 
 
 ### USER-LEVEL LIBRARY ###
 
-The fastsocket user library enables applicaiton to run with the function
-of fastsocket.
-
 To compile the library, enter the library directory, and make:
 
 	[root@localhost fastsocket]# cd library
 	[root@localhost library]# make
 
-After that, a file named libsocket.so is created.
+After that, a file named libsocket.so is created in the same directory.
 
 
 ## SYSTEM CONFIGURATION ##
 
-Boot into the kernel with fastsocket and probe the fastsocket module into the
-kernel:
+After booting into the kernel with fastsocket, you can probe the fastsocket
+module into the kernel:
 
 	[root@localhost ~]# modprobe fastsocket
-
-The above command goes with three options - enable_listen_spawn,
-enable_fast_epool, enable_receive_flow_deliver, which are the
-recommended options.
 
 To check if the module is loaded successfully, run
 
@@ -148,17 +141,16 @@ and make sure you get a line like the following
 
     fastsocket             23145  0
 
-Set up IP addresses as you like, and bind each Tx/Rx queue to on a certain
-processor by running
+Set up IP addresses as you like, and a script in the repository will take care
+of the remaining configurations:
 
 	[root@localhost ~]# cd fastsocket
 	[root@localhost fastsocket]# scripts/nic.sh -i eth0
 
-where *eth0* is the interface to be used and should be changed according to your
+*eth0* is the interface to be used and should be changed according to your
 system configuration (refer to *ifconfig* for details). The scripts will
 automatically check system and NIC parameters and configures various
-features. Please make sure you see the following line at the end of the output
-of the script:
+features. Please make sure you see the following line at the end of the output:
 
     Fastsocket has successfully configured eth0
 
@@ -185,6 +177,16 @@ The demo server can act as a simple web server or a proxy server. The former
 needs two hosts and the latter three. For more details on the demo server
 please refer to [Demo Server](http://github.com).
 
+> Note: It is recommended to install Fastsocket on all machines involved in the
+> tests, no matter they act as clients or servers, to avoid potential
+> bottlenecks in the original kernel.
+
+### BUILD DEMO ###
+
+Demo can be built by the following command:
+
+>	`[root@localhost fastsocket]# cd demo && make`
+
 ### SIMPLE WEB MODE ###
 
 In the simple web mode, two hosts are needed:
@@ -207,8 +209,6 @@ To run the demo, here are the steps on each of two hosts.
 
 **Host A**:
 
-> - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Install and run the workload, e.g.
 >
 >	`[root@localhost ~]# ab -n 1000000 -c 100 http://10.0.0.2:80/`
@@ -221,12 +221,6 @@ To run the demo, here are the steps on each of two hosts.
 
 **Host B**:
 
-> - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [usage](#usage).
-> - Make the demo server
->
->	`[root@localhost fastsocket]# cd demo && make`
->
 > - Run the demo server with fastsocket
 >
 >	`[root@localhost demo]# LD_PRELOAD=../library/libsocket.so ./server -w ## -a 10.0.0.2:80`
@@ -260,8 +254,6 @@ To run the demo, here are the steps on each of three hosts.
 
 **Host A**:
 
-> - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [usage](#usage).
 > - Run the work load, here with 12 tasks:
 >
 >	`[root@localhost ~]# ab -n 1000000 -c 100 http://10.0.0.2:96/`
@@ -273,26 +265,14 @@ To run the demo, here are the steps on each of three hosts.
 
 **Host B**:
 
-> - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [usage](#usage).
-> - Make the demo server
->
->	`[root@localhost fastsocket]# cd demo && make`
->
-> - Run the demo server with fastsocket
+> - Run the demo server with fastsocket in proxy mode
 >
 >	`[root@localhost demo]# LD_PRELOAD=../library/libsocket.so ./server -w ## -a 10.0.0.2:96 -x 10.0.0.3:80`
 >
 
 **Host C**:
 
-> - Make sure the host is booted with the fastsocket kernel
-> - Load the module into kernel and complete configurations in [usage](#usage).
-> - Make the demo server
->
->	`[root@localhost fastsocket]# cd demo && make`
->
-> - Run the demo server with fastsocket
+> - Run the demo server with fastsocket in simple web mode
 >
 >	`[root@localhost demo]# LD_PRELOAD=../library/libsocket.so ./server -w ## -a 10.0.0.3:80`
 >
